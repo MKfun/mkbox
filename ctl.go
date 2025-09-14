@@ -20,7 +20,7 @@ type Ctl struct {
 
 func NewCtl() *Ctl {
 	return &Ctl{
-		SocketPath: getEnv("MBOX_SOCKET_PATH", "/var/run/mkbox.sock"),
+		SocketPath: getEnv("MBOX_SOCKET_PATH", "/var/run/mkbox/mkbox.sock"),
 		DataDir:    getEnv("MBOX_DATA_DIR", "/var/lib/mkbox"),
 	}
 }

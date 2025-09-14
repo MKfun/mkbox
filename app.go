@@ -162,7 +162,7 @@ func sanitizeFilename(filename string) string {
 
 func NewApp() *App {
 	config := &Config{
-		SocketPath:     getEnv("MBOX_SOCKET_PATH", "/var/run/mkbox.sock"),
+		SocketPath:     getEnv("MBOX_SOCKET_PATH", "/var/run/mkbox/mkbox.sock"),
 		DataDir:        getEnv("MBOX_DATA_DIR", "/var/lib/mkbox"),
 		MaxFileSize:    150 * 1024 * 1024 * 1024, // 150GB
 		MaxStorageSize: 20 * 1024 * 1024 * 1024,  // 20GB

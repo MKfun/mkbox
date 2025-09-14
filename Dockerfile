@@ -37,7 +37,7 @@ USER mkbox
 
 EXPOSE 8080
 
-ENV MBOX_SOCKET_PATH=/var/run/mkbox.sock
+ENV MBOX_SOCKET_PATH=/var/run/mkbox/mkbox.sock
 ENV MBOX_DATA_DIR=/var/lib/mkbox
 
 CMD ["./mkbox", "-daemon"]
