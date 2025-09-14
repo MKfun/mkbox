@@ -414,6 +414,7 @@ func (app *App) Run() {
 	e.DELETE("/files/:id", app.handleDelete, app.authMiddleware, app.csrfMiddleware())
 	e.GET("/api/files", app.handleListFiles, app.authMiddleware)
 	e.GET("/api/stats", app.handleStats, app.authMiddleware)
+	e.GET("/api/info", app.handleInfo)
 
 	var listener net.Listener
 	var err error
@@ -1058,4 +1059,10 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 		return next(c)
 	}
+}
+
+func (app *App) handleInfo(c echo.Context) error {
+	return c.JSON(200, map[string]string{
+		"version": "mkbox-a1.1",
+	})
 }

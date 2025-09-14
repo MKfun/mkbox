@@ -14,6 +14,8 @@ export class App {
   }
 
   async init() {
+    await this.loadVersion();
+    
     if (await this.api.checkToken()) {
       this.ui.showMain();
       await this.fileManager.loadFiles();
@@ -24,6 +26,16 @@ export class App {
     }
 
     this.setupEventListeners();
+  }
+
+  private async loadVersion() {
+    try {
+      const info = await this.api.getInfo();
+      this.ui.showVersion(info.version);
+    } catch (error) {
+      console.error('Failed to load version:', error);
+      this.ui.showVersion('idk');
+    }
   }
 
   private setupEventListeners() {

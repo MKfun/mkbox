@@ -185,4 +185,12 @@ export class ApiClient {
       xhr.send(formData);
     });
   }
+
+  async getInfo(): Promise<{ version: string }> {
+    const response = await fetch('/api/info');
+    if (!response.ok) {
+      throw new Error('Failed to get info');
+    }
+    return response.json();
+  }
 }
