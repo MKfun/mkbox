@@ -318,6 +318,9 @@ func (app *App) Run() {
 		log.Printf("mkboxd listening on %s", app.Config.SocketPath)
 	} else {
 		listener, err = net.Listen("unix", app.Config.SocketPath)
+		if err == nil {
+			os.Chmod(app.Config.SocketPath, 0666)
+		}
 		log.Printf("mkboxd listening on %s", app.Config.SocketPath)
 	}
 
