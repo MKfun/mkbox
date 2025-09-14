@@ -1,7 +1,8 @@
 .PHONY: build run test clean docker frontend dev
 
 build: frontend
-	go build -o mkbox .
+	go build -trimpath -ldflags="-s -w" -o mkbox . 
+	
 
 frontend:
 	pnpm install
