@@ -1,0 +1,26 @@
+[Unit]
+Description=mkbox file server
+After=network.target
+
+[Service]
+Type=simple
+User=mkbox
+Group=mkbox
+WorkingDirectory=/opt/mkbox
+ExecStart=/opt/mkbox/mkbox -daemon
+Restart=always
+RestartSec=5
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mkbox /var/run
+
+# Resource limits
+LimitNOFILE=65536
+MemoryMax=512M
+
+[Install]
+WantedBy=multi-user.target

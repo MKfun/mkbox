@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mkbox</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="background"></div>
+    <div id="content">
+        <div class="header-nav">
+            <a href="/" class="logo">mkbox</a>
+            <div id="auth-section" class="auth-section">
+                <input type="password" id="key-input" placeholder="Введите ключ" class="long">
+                <button onclick="login()">Войти</button>
+            </div>
+        </div>
+
+        <div id="main-section" style="display: none;">
+            <h1>mkbox - файловый сервер</h1>
+            
+            <div id="status-section" class="status-section">
+                <p id="status-text">Загрузка статистики...</p>
+            </div>
+            
+            <div class="upload-area" id="upload-area">
+                <p>Перетащите файлы сюда или нажмите для выбора</p>
+                <form id="upload-form" enctype="multipart/form-data">
+                    <input type="file" id="file-input" name="file" required style="display: none;">
+                    <button type="button" onclick="document.getElementById('file-input').click()">Выбрать файл</button>
+                </form>
+            </div>
+
+            <hr>
+
+            <h2>Мои файлы <span class="status-indicator online"></span></h2>
+            <div class="file-actions">
+                <button onclick="createPersonalToken()" class="secondary">Создать персональный токен</button>
+                <button onclick="logout()" class="danger">Выйти</button>
+            </div>
+            <div id="files-list"></div>
+        </div>
+
+        <div id="error-message" class="error-message" style="display: none;"></div>
+        <div id="success-message" class="success-message" style="display: none;"></div>
+    </div>
+
+    <script type="module">
+        import background from './background.js';
+        
+        const backgroundEl = document.getElementById('background');
+        background(backgroundEl);
+    </script>
+    <script>
+        let token = localStorage.getItem('mkbox_token');
+
+        if (token) {
+            checkToken();
+        }
+
+        async function checkToken() {
+            try {
+                const response = await fetch('/api/stats', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (response.ok) {
+                    document.getElementById('auth-section').style.display = 'none';
+                    document.getElementById('main-section').style.display = 'block';
+                    loadFiles();
+                    loadStats();
+                } else {
+                    localStorage.removeItem('mkbox_token');
+                    token = null;
+                }
+            } catch (error) {
+                localStorage.removeItem('mkbox_token');
+                token = null;
+            }
+        }
+
+        function showError(message) {
+            document.getElementById('error-message').textContent = message;
+            document.getElementById('error-message').style.display = 'block';
+            document.getElementById('success-message').style.display = 'none';
+        }
+
+        function showSuccess(message) {
+            document.getElementById('success-message').textContent = message;
+            document.getElementById('success-message').style.display = 'block';
+            document.getElementById('error-message').style.display = 'none';
+        }
+
+        async function login() {
+            const key = document.getElementById('key-input').value;
+            if (!key) {
+                showError('Введите ключ');
+                return;
+            }
+
+            try {
+                const csrfResponse = await fetch('/csrf-token');
+                const csrfData = await csrfResponse.json();
+                
+                const response = await fetch('/auth', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfData.token
+                    },
+                    body: JSON.stringify({ key: key })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    token = data.token;
+                    localStorage.setItem('mkbox_token', token);
+                    document.getElementById('auth-section').style.display = 'none';
+                    document.getElementById('main-section').style.display = 'block';
+                    loadFiles();
+                    loadStats();
+                } else {
+                    showError(data.error || 'Ошибка авторизации');
+                }
+            } catch (error) {
+                showError('Ошибка сети');
+            }
+        }
+
+        async function loadFiles() {
+            try {
+                const response = await fetch('/api/files', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const files = await response.json();
+                    displayFiles(files);
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки файлов:', error);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+
+                if (response.ok) {
+                    const stats = await response.json();
+                    displayStats(stats);
+                }
+            } catch (error) {
+                console.error('Ошибка загрузки статистики:', error);
+            }
+        }
+
+        function displayStats(stats) {
+            const statusText = document.getElementById('status-text');
+            const fileCount = stats.file_count;
+            const totalSize = formatSize(stats.total_size);
+            statusText.textContent = `Сейчас залито ${fileCount} файлов. Диск засрали на ${totalSize}.`;
+        }
+
+        function displayFiles(files) {
+            const container = document.getElementById('files-list');
+            if (files.length === 0) {
+                container.innerHTML = '<p>Файлы не найдены</p>';
+                return;
+            }
+
+            container.innerHTML = files.map(file => `
+                <div class="file-item">
+                    <span>${file.filename}</span>
+                    <span>${formatSize(file.size)}</span>
+                    <span>${new Date(file.created_at).toLocaleString()}</span>
+                    <button onclick="downloadFile('${file.id}')">Скачать</button>
+                    <button onclick="deleteFile('${file.id}')">Удалить</button>
+                </div>
+            `).join('');
+        }
+
+        function formatSize(bytes) {
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            if (bytes === 0) return '0 B';
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+        }
+
+        async function downloadFile(fileId) {
+            window.open(`/files/${fileId}`, '_blank');
+        }
+
+        async function deleteFile(fileId) {
+            if (!confirm('Удалить файл?')) return;
+
+            try {
+                const csrfResponse = await fetch('/csrf-token');
+                const csrfData = await csrfResponse.json();
+                
+                const response = await fetch(`/files/${fileId}`, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'X-CSRF-Token': csrfData.token
+                    }
+                });
+
+                if (response.ok) {
+                    showSuccess('Файл удален');
+                    loadFiles();
+                    loadStats();
+                } else {
+                    const data = await response.json();
+                    showError(data.error || 'Ошибка удаления');
+                }
+            } catch (error) {
+                showError('Ошибка сети');
+            }
+        }
+
+        const uploadArea = document.getElementById('upload-area');
+        
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+        
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+        
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                document.getElementById('file-input').files = files;
+                uploadFile(files[0]);
+            }
+        });
+
+        document.getElementById('upload-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const fileInput = document.getElementById('file-input');
+            if (!fileInput.files[0]) {
+                showError('Выберите файл');
+                return;
+            }
+
+            uploadFile(fileInput.files[0]);
+        });
+
+        document.getElementById('file-input').addEventListener('change', (e) => {
+            if (e.target.files[0]) {
+                uploadFile(e.target.files[0]);
+            }
+        });
+
+        async function createPersonalToken() {
+            const key = prompt('Введите мастер-ключ для создания персонального токена:');
+            if (!key) return;
+
+            try {
+                const csrfResponse = await fetch('/csrf-token');
+                const csrfData = await csrfResponse.json();
+                
+                const response = await fetch('/create-token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfData.token
+                    },
+                    body: JSON.stringify({ key: key })
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    showSuccess(`Персональный токен создан: ${data.token}`);
+                    navigator.clipboard.writeText(data.token);
+                } else {
+                    showError(data.error || 'Ошибка создания токена');
+                }
+            } catch (error) {
+                showError('Ошибка сети');
+            }
+        }
+
+
+        async function uploadFile(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const csrfResponse = await fetch('/csrf-token');
+                const csrfData = await csrfResponse.json();
+                
+                const response = await fetch('/upload', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'X-CSRF-Token': csrfData.token
+                    },
+                    body: formData
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    showSuccess('Файл загружен');
+                    document.getElementById('file-input').value = '';
+                    loadFiles();
+                    loadStats();
+                } else {
+                    showError(data.error || 'Ошибка загрузки');
+                }
+            } catch (error) {
+                showError('Ошибка сети');
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('mkbox_token');
+            token = null;
+            document.getElementById('auth-section').style.display = 'flex';
+            document.getElementById('main-section').style.display = 'none';
+            document.getElementById('key-input').value = '';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  mkbox:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - mkbox_data:/var/lib/mkbox
+    environment:
+      - MBOX_SOCKET_PATH=:8080
+      - MBOX_DATA_DIR=/var/lib/mkbox
+    command: ["./mkbox", "-daemon"]
+
+volumes:
+  mkbox_data:

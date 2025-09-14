@@ -1,0 +1,19 @@
+{
+  "name": "mkbox-frontend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run clean && esbuild src/background.ts --bundle --minify --format=esm --sourcemap --outdir=public --external:three --loader:.png=file",
+    "dev": "esbuild src/background.ts --bundle --format=esm --sourcemap --outdir=public --external:three --loader:.png=file --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist public/*.js public/*.js.map"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "esbuild": "^0.19.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  }
+}
