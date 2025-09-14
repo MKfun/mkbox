@@ -658,8 +658,6 @@ func (ctl *Ctl) unlockAll() {
 func (ctl *Ctl) showStats() {
 	fmt.Println("=== mkbox статистика ===")
 	fmt.Println()
-
-	// Информация о системе
 	fmt.Println("Система:")
 	fmt.Printf("  Go версия: %s\n", runtime.Version())
 	fmt.Printf("  ОС: %s\n", runtime.GOOS)
@@ -667,8 +665,6 @@ func (ctl *Ctl) showStats() {
 	fmt.Printf("  Количество CPU: %d\n", runtime.NumCPU())
 	fmt.Printf("  Количество горутин: %d\n", runtime.NumGoroutine())
 	fmt.Println()
-
-	// Информация о памяти
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	fmt.Println("Память:")
@@ -678,8 +674,6 @@ func (ctl *Ctl) showStats() {
 	fmt.Printf("  Количество сборок мусора: %d\n", m.NumGC)
 	fmt.Printf("  Время последней сборки мусора: %s\n", time.Unix(0, int64(m.LastGC)).Format("2006-01-02 15:04:05"))
 	fmt.Println()
-
-	// Информация о базе данных
 	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
 	if _, err := os.Stat(dbPath); err != nil {
 		fmt.Println("База данных не найдена. Запустите 'mkboxctl init'")
@@ -692,8 +686,6 @@ func (ctl *Ctl) showStats() {
 		return
 	}
 	defer db.Close()
-
-	// Статистика файлов
 	var fileCount int64
 	var totalSize int64
 	var oldestFile time.Time
@@ -714,8 +706,6 @@ func (ctl *Ctl) showStats() {
 		fmt.Printf("  Самый новый файл: %s\n", newestFile.Format("2006-01-02 15:04:05"))
 	}
 	fmt.Println()
-
-	// Статистика персональных токенов
 	var tokenCount int64
 	var activeTokens int64
 	db.QueryRow("SELECT COUNT(*) FROM personal_tokens").Scan(&tokenCount)
@@ -725,8 +715,6 @@ func (ctl *Ctl) showStats() {
 	fmt.Printf("  Всего персональных токенов: %d\n", tokenCount)
 	fmt.Printf("  Активных за последние 7 дней: %d\n", activeTokens)
 	fmt.Println()
-
-	// Статистика блокировок
 	var userLockdowns int64
 	var globalLockdowns int64
 	db.QueryRow("SELECT COUNT(*) FROM lockdowns WHERE type = 'user'").Scan(&userLockdowns)
@@ -736,8 +724,6 @@ func (ctl *Ctl) showStats() {
 	fmt.Printf("  Заблокированных пользователей: %d\n", userLockdowns)
 	fmt.Printf("  Глобальных блокировок: %d\n", globalLockdowns)
 	fmt.Println()
-
-	// Статистика по типам файлов
 	fmt.Println("Топ-10 типов файлов:")
 	rows, err := db.Query(`
 		SELECT mime_type, COUNT(*) as count, SUM(size) as total_size 
@@ -758,7 +744,6 @@ func (ctl *Ctl) showStats() {
 	}
 	fmt.Println()
 
-	// Статистика по размерам файлов
 	fmt.Println("Распределение по размерам:")
 	var smallFiles, mediumFiles, largeFiles int64
 	db.QueryRow("SELECT COUNT(*) FROM files WHERE size < 1024*1024").Scan(&smallFiles)                            // < 1MB
@@ -770,7 +755,6 @@ func (ctl *Ctl) showStats() {
 	fmt.Printf("  Большие файлы (> 100MB): %d\n", largeFiles)
 	fmt.Println()
 
-	// Информация о конфигурации
 	configPath := filepath.Join(ctl.DataDir, "config")
 	if data, err := os.ReadFile(configPath); err == nil {
 		fmt.Println("Конфигурация:")
@@ -806,12 +790,9 @@ func (ctl *Ctl) showStats() {
 		}
 	}
 	fmt.Println()
-
-	// Информация о горутинах
 	fmt.Println("Горутины:")
 	fmt.Printf("  Всего горутин: %d\n", runtime.NumGoroutine())
 
-	// Показываем стек горутин
 	buf := make([]byte, 1024*1024)
 	n := runtime.Stack(buf, true)
 	fmt.Println("  Стек горутин:")

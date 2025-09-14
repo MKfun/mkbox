@@ -3,8 +3,12 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "pnpm run clean && esbuild src/background.ts --bundle --minify --format=esm --sourcemap --outdir=public --external:three --loader:.png=file",
-    "dev": "esbuild src/background.ts --bundle --format=esm --sourcemap --outdir=public --external:three --loader:.png=file --watch",
+    "build": "pnpm run clean && pnpm run build:background && pnpm run build:app",
+    "build:background": "esbuild src/background.ts --bundle --minify --format=esm --sourcemap --outdir=public --external:three --loader:.png=file",
+    "build:app": "esbuild src/app.ts --bundle --minify --format=esm --sourcemap --outdir=public",
+    "dev": "pnpm run clean && pnpm run dev:background & pnpm run dev:app",
+    "dev:background": "esbuild src/background.ts --bundle --format=esm --sourcemap --outdir=public --external:three --loader:.png=file --watch",
+    "dev:app": "esbuild src/app.ts --bundle --format=esm --sourcemap --outdir=public --watch",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist public/*.js public/*.js.map"
   },

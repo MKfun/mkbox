@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +43,7 @@ type App struct {
 	Config        *Config
 	RateLimiter   *rate.Limiter
 	AuthLimiter   *rate.Limiter
+	UploadLimiter *rate.Limiter
 	CSRFTokens    map[string]time.Time
 	CSRFMutex     sync.RWMutex
 	FileCache     map[string]File
@@ -197,6 +197,7 @@ func NewApp() *App {
 		Config:        config,
 		RateLimiter:   rate.NewLimiter(rate.Limit(10), 20),
 		AuthLimiter:   rate.NewLimiter(rate.Limit(5), 10),
+		UploadLimiter: rate.NewLimiter(rate.Limit(3), 5), // 3 загрузки в секунду, burst 5
 		CSRFTokens:    make(map[string]time.Time),
 		FileCache:     make(map[string]File),
 		StatsCache:    make(map[string]interface{}),
@@ -402,17 +403,17 @@ func (app *App) Run() {
 
 	e.GET("/style.css", app.handleStatic("public/style.css"))
 	e.GET("/background.js", app.handleStatic("public/background.js"))
+	e.GET("/app.js", app.handleStatic("public/app.js"))
 	e.GET("/end-portal-*.png", app.handlePNG)
 	e.GET("/", app.handleIndex)
 	e.GET("/csrf-token", app.handleCSRFToken)
 	e.POST("/auth", app.handleAuth, app.authRateLimitMiddleware(), app.csrfMiddleware())
 	e.POST("/create-token", app.handleCreateToken, app.authRateLimitMiddleware(), app.csrfMiddleware())
-	e.POST("/upload", app.handleUpload, app.authMiddleware, app.csrfMiddleware())
+	e.POST("/upload", app.handleUpload, app.authMiddleware, app.uploadRateLimitMiddleware(), app.csrfMiddleware())
 	e.GET("/files/:id", app.handleDownload)
 	e.DELETE("/files/:id", app.handleDelete, app.authMiddleware, app.csrfMiddleware())
 	e.GET("/api/files", app.handleListFiles, app.authMiddleware)
 	e.GET("/api/stats", app.handleStats, app.authMiddleware)
-	e.GET("/api/detailed-stats", app.handleDetailedStats, app.authMiddleware)
 
 	var listener net.Listener
 	var err error
@@ -576,118 +577,6 @@ func (app *App) handleStats(c echo.Context) error {
 	})
 }
 
-func (app *App) handleDetailedStats(c echo.Context) error {
-	auth := c.Request().Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return c.JSON(401, map[string]string{"error": "Missing authorization"})
-	}
-
-	tokenString := strings.TrimPrefix(auth, "Bearer ")
-	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
-		return []byte(app.Config.JWTSecret), nil
-	})
-
-	if err != nil || !token.Valid {
-		return c.JSON(401, map[string]string{"error": "Invalid token"})
-	}
-
-	// Дополнительная проверка - только мастер-ключ может получить детальную статистику
-	// Проверяем, что токен был создан с мастер-ключом (не персональный токен)
-	claims, ok := token.Claims.(*TokenClaims)
-	if !ok || claims.FileID != "" {
-		return c.JSON(403, map[string]string{"error": "Admin access required"})
-	}
-
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-
-	var fileCount int64
-	var totalSize int64
-	var oldestFile time.Time
-	var newestFile time.Time
-
-	app.DB.Model(&File{}).Count(&fileCount)
-	app.DB.Model(&File{}).Select("COALESCE(SUM(size), 0)").Scan(&totalSize)
-	app.DB.Model(&File{}).Select("MIN(created_at)").Scan(&oldestFile)
-	app.DB.Model(&File{}).Select("MAX(created_at)").Scan(&newestFile)
-
-	var tokenCount int64
-	var activeTokens int64
-	app.DB.Model(&PersonalToken{}).Count(&tokenCount)
-	app.DB.Model(&PersonalToken{}).Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).Count(&activeTokens)
-
-	var userLockdowns int64
-	var globalLockdowns int64
-	app.DB.Model(&Lockdown{}).Where("type = ?", "user").Count(&userLockdowns)
-	app.DB.Model(&Lockdown{}).Where("type = ?", "all").Count(&globalLockdowns)
-
-	var mimeStats []struct {
-		MimeType  string `json:"mime_type"`
-		Count     int64  `json:"count"`
-		TotalSize int64  `json:"total_size"`
-	}
-	app.DB.Model(&File{}).Select("mime_type, COUNT(*) as count, SUM(size) as total_size").
-		Group("mime_type").Order("count DESC").Limit(10).Scan(&mimeStats)
-
-	var smallFiles, mediumFiles, largeFiles int64
-	app.DB.Model(&File{}).Where("size < ?", 1024*1024).Count(&smallFiles)
-	app.DB.Model(&File{}).Where("size >= ? AND size < ?", 1024*1024, 100*1024*1024).Count(&mediumFiles)
-	app.DB.Model(&File{}).Where("size >= ?", 100*1024*1024).Count(&largeFiles)
-
-	app.CacheMutex.RLock()
-	cacheSize := len(app.FileCache)
-	app.CacheMutex.RUnlock()
-
-	app.StatsMutex.RLock()
-	statsCacheSize := len(app.StatsCache)
-	app.StatsMutex.RUnlock()
-
-	return c.JSON(200, map[string]interface{}{
-		"system": map[string]interface{}{
-			"go_version":     runtime.Version(),
-			"os":             runtime.GOOS,
-			"arch":           runtime.GOARCH,
-			"num_cpu":        runtime.NumCPU(),
-			"num_goroutines": runtime.NumGoroutine(),
-			"memory": map[string]interface{}{
-				"alloc":       m.Alloc,
-				"total_alloc": m.TotalAlloc,
-				"sys":         m.Sys,
-				"num_gc":      m.NumGC,
-				"last_gc":     m.LastGC,
-			},
-		},
-		"files": map[string]interface{}{
-			"count":      fileCount,
-			"total_size": totalSize,
-			"oldest":     oldestFile,
-			"newest":     newestFile,
-			"size_distribution": map[string]int64{
-				"small":  smallFiles,
-				"medium": mediumFiles,
-				"large":  largeFiles,
-			},
-			"mime_types": mimeStats,
-		},
-		"tokens": map[string]interface{}{
-			"total":  tokenCount,
-			"active": activeTokens,
-		},
-		"lockdowns": map[string]interface{}{
-			"users":  userLockdowns,
-			"global": globalLockdowns,
-		},
-		"cache": map[string]interface{}{
-			"file_cache_size":  cacheSize,
-			"stats_cache_size": statsCacheSize,
-		},
-		"config": map[string]interface{}{
-			"max_file_size":    app.Config.MaxFileSize,
-			"max_storage_size": app.Config.MaxStorageSize,
-		},
-	})
-}
-
 func (app *App) handleAuth(c echo.Context) error {
 	var req struct {
 		Key string `json:"key"`
@@ -717,6 +606,9 @@ func (app *App) handleAuth(c echo.Context) error {
 }
 
 func (app *App) handleUpload(c echo.Context) error {
+	clientIP := c.RealIP()
+	userAgent := c.Request().Header.Get("User-Agent")
+
 	lockdownChan := make(chan error, 1)
 	go func() {
 		var globalLockdown Lockdown
@@ -726,9 +618,11 @@ func (app *App) handleUpload(c echo.Context) error {
 	select {
 	case err := <-lockdownChan:
 		if err == nil {
+			log.Printf("SECURITY: Upload blocked due to global lockdown from %s (%s)", clientIP, userAgent)
 			return c.JSON(403, map[string]string{"error": "Uploads are disabled"})
 		}
 	case <-time.After(2 * time.Second):
+		log.Printf("SECURITY: Database timeout during upload from %s", clientIP)
 		return c.JSON(500, map[string]string{"error": "Database timeout"})
 	}
 
@@ -808,15 +702,39 @@ func (app *App) handleUpload(c echo.Context) error {
 	}
 
 	if file.Size > app.Config.MaxFileSize {
+		log.Printf("SECURITY: File too large (%d bytes) from %s, filename: %s", file.Size, clientIP, file.Filename)
 		return c.JSON(400, map[string]string{"error": "File too large"})
 	}
 
 	if file.Size <= 0 {
+		log.Printf("SECURITY: Empty file upload attempt from %s, filename: %s", clientIP, file.Filename)
 		return c.JSON(400, map[string]string{"error": "Empty file not allowed"})
+	}
+
+	var totalSize int64
+	storageChan := make(chan error, 1)
+	go func() {
+		storageChan <- app.DB.Model(&File{}).Select("COALESCE(SUM(size), 0)").Scan(&totalSize).Error
+	}()
+
+	select {
+	case err := <-storageChan:
+		if err != nil {
+			log.Printf("SECURITY: Failed to check storage size from %s: %v", clientIP, err)
+			return c.JSON(500, map[string]string{"error": "Storage check failed"})
+		}
+		if totalSize+file.Size > app.Config.MaxStorageSize {
+			log.Printf("SECURITY: Storage limit exceeded (%d + %d > %d) from %s", totalSize, file.Size, app.Config.MaxStorageSize, clientIP)
+			return c.JSON(413, map[string]string{"error": "Storage limit exceeded"})
+		}
+	case <-time.After(2 * time.Second):
+		log.Printf("SECURITY: Storage check timeout from %s", clientIP)
+		return c.JSON(500, map[string]string{"error": "Storage check timeout"})
 	}
 
 	sanitizedFilename := sanitizeFilename(file.Filename)
 	if sanitizedFilename == "" {
+		log.Printf("SECURITY: Invalid filename from %s: %s", clientIP, file.Filename)
 		return c.JSON(400, map[string]string{"error": "Invalid filename"})
 	}
 
@@ -834,6 +752,7 @@ func (app *App) handleUpload(c echo.Context) error {
 
 	declaredMime := file.Header.Get("Content-Type")
 	if !validateMimeType(fileContent, declaredMime) {
+		log.Printf("SECURITY: Invalid MIME type from %s: declared=%s, filename=%s", clientIP, declaredMime, sanitizedFilename)
 		return c.JSON(400, map[string]string{"error": "File type not allowed"})
 	}
 
@@ -902,6 +821,8 @@ func (app *App) handleUpload(c echo.Context) error {
 	app.setCachedFile(fileRecord)
 
 	go app.cleanupOldFiles()
+
+	log.Printf("INFO: File uploaded successfully: ID=%s, filename=%s, size=%d, from=%s", fileID, sanitizedFilename, file.Size, clientIP)
 
 	return c.JSON(200, map[string]interface{}{
 		"id":        fileID,
@@ -1060,7 +981,20 @@ func (app *App) authRateLimitMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
 			if !app.AuthLimiter.Allow() {
+				log.Printf("SECURITY: Auth rate limit exceeded from %s", c.RealIP())
 				return c.JSON(429, map[string]string{"error": "Authentication rate limit exceeded"})
+			}
+			return next(c)
+		}
+	}
+}
+
+func (app *App) uploadRateLimitMiddleware() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if !app.UploadLimiter.Allow() {
+				log.Printf("SECURITY: Upload rate limit exceeded from %s", c.RealIP())
+				return c.JSON(429, map[string]string{"error": "Upload rate limit exceeded"})
 			}
 			return next(c)
 		}
