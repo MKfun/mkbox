@@ -59,6 +59,7 @@ type Config struct {
 type File struct {
 	ID              string    `gorm:"primaryKey" json:"id"`
 	Token           string    `gorm:"uniqueIndex" json:"token"`
+	JWTToken        string    `gorm:"uniqueIndex" json:"jwt_token"`
 	Filename        string    `json:"filename"`
 	Size            int64     `json:"size"`
 	MimeType        string    `json:"mime_type"`
@@ -70,6 +71,7 @@ type PersonalToken struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
 	Token     string    `gorm:"uniqueIndex" json:"token"`
 	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -83,6 +85,12 @@ type Lockdown struct {
 
 type TokenClaims struct {
 	FileID string `json:"file_id"`
+	jwt.RegisteredClaims
+}
+
+type FileTokenClaims struct {
+	FileID string `json:"file_id"`
+	Type   string `json:"type"` // "file_access"
 	jwt.RegisteredClaims
 }
 
@@ -253,6 +261,33 @@ func (app *App) cleanupCSRFTokens() {
 		}
 		app.CSRFMutex.Unlock()
 	}
+}
+
+func (app *App) validateFileJWT(tokenString, fileID string) bool {
+	token, err := jwt.ParseWithClaims(tokenString, &FileTokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(app.Config.JWTSecret), nil
+	})
+
+	if err != nil || !token.Valid {
+		return false
+	}
+
+	claims, ok := token.Claims.(*FileTokenClaims)
+	if !ok {
+		return false
+	}
+
+	// Проверяем тип токена и привязку к файлу
+	if claims.Type != "file_access" || claims.FileID != fileID {
+		return false
+	}
+
+	// Проверяем срок действия
+	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
+		return false
+	}
+
+	return true
 }
 
 func (app *App) cleanupOldFiles() {
@@ -459,11 +494,16 @@ func (app *App) handleUpload(c echo.Context) error {
 	} else {
 		tempToken := generateSecureToken(32)
 		clientIP := c.RealIP()
+		userAgent := c.Request().Header.Get("User-Agent")
+		if len(userAgent) > 200 {
+			userAgent = userAgent[:200]
+		}
 
 		personalTokenRecord = PersonalToken{
 			ID:        uuid.New().String(),
 			Token:     tempToken,
 			IP:        clientIP,
+			UserAgent: userAgent,
 			CreatedAt: time.Now(),
 		}
 
@@ -527,10 +567,26 @@ func (app *App) handleUpload(c echo.Context) error {
 	}
 
 	token := generateSecureToken(32)
+
+	// жвт для ФАЙЛОВ
+	fileJWT := jwt.NewWithClaims(jwt.SigningMethodHS256, FileTokenClaims{
+		FileID: fileID,
+		Type:   "file_access",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)), // 7 дней
+		},
+	})
+	fileJWTString, err := fileJWT.SignedString([]byte(app.Config.JWTSecret))
+	if err != nil {
+		os.Remove(filePath)
+		return c.JSON(500, map[string]string{"error": "Failed to create file JWT token"})
+	}
+
 	detectedMime := http.DetectContentType(fileContent)
 	fileRecord := File{
 		ID:              fileID,
 		Token:           token,
+		JWTToken:        fileJWTString,
 		Filename:        sanitizedFilename,
 		Size:            file.Size,
 		MimeType:        detectedMime,
@@ -546,11 +602,12 @@ func (app *App) handleUpload(c echo.Context) error {
 	app.cleanupOldFiles()
 
 	return c.JSON(200, map[string]interface{}{
-		"id":       fileID,
-		"token":    token,
-		"filename": sanitizedFilename,
-		"size":     file.Size,
-		"url":      "/files/" + fileID,
+		"id":        fileID,
+		"token":     token,
+		"jwt_token": fileJWTString,
+		"filename":  sanitizedFilename,
+		"size":      file.Size,
+		"url":       "/files/" + fileID,
 	})
 }
 
@@ -561,9 +618,28 @@ func (app *App) handleDownload(c echo.Context) error {
 		return c.JSON(400, map[string]string{"error": "Invalid file ID"})
 	}
 
+	// Проверяем JWT токен в заголовке или query параметре
+	jwtToken := c.Request().Header.Get("X-File-Token")
+	if jwtToken == "" {
+		jwtToken = c.QueryParam("token")
+	}
+
 	var file File
 	if err := app.DB.Where("id = ?", fileID).First(&file).Error; err != nil {
 		return c.JSON(404, map[string]string{"error": "File not found"})
+	}
+
+	// Если есть JWT токен, проверяем его
+	if jwtToken != "" {
+		if !app.validateFileJWT(jwtToken, fileID) {
+			return c.JSON(403, map[string]string{"error": "Invalid file token"})
+		}
+	} else {
+		// Fallback на старый способ с обычным токеном
+		regularToken := c.QueryParam("token")
+		if regularToken == "" || regularToken != file.Token {
+			return c.JSON(403, map[string]string{"error": "File token required"})
+		}
 	}
 
 	filePath, err := validateFilePath(app.Config.DataDir, fileID)
@@ -618,12 +694,18 @@ func (app *App) handleCreateToken(c echo.Context) error {
 		clientIP = "unknown"
 	}
 
+	userAgent := c.Request().Header.Get("User-Agent")
+	if len(userAgent) > 200 {
+		userAgent = userAgent[:200]
+	}
+
 	token := generateSecureToken(32)
 
 	personalToken := PersonalToken{
 		ID:        uuid.New().String(),
 		Token:     token,
 		IP:        clientIP,
+		UserAgent: userAgent,
 		CreatedAt: time.Now(),
 	}
 

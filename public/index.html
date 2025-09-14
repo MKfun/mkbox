@@ -190,8 +190,11 @@
                     <span>${file.filename}</span>
                     <span>${formatSize(file.size)}</span>
                     <span>${new Date(file.created_at).toLocaleString()}</span>
-                    <button onclick="downloadFile('${file.id}')">Скачать</button>
-                    <button onclick="deleteFile('${file.id}')">Удалить</button>
+                    <div class="file-actions">
+                        <button onclick="downloadFile('${file.id}', '${file.jwt_token || file.token}')">Скачать</button>
+                        <button onclick="copyToken('${file.jwt_token || file.token}')">Копировать токен</button>
+                        <button onclick="deleteFile('${file.id}')">Удалить</button>
+                    </div>
                 </div>
             `).join('');
         }
@@ -203,8 +206,36 @@
             return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
         }
 
-        async function downloadFile(fileId) {
-            window.open(`/files/${fileId}`, '_blank');
+        async function downloadFile(fileId, fileToken) {
+            if (fileToken && fileToken.length > 50) {
+                const link = document.createElement('a');
+                link.href = `/files/${fileId}`;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                
+                fetch(`/files/${fileId}`, {
+                    headers: {
+                        'X-File-Token': fileToken
+                    }
+                }).then(response => {
+                    if (response.ok) {
+                        return response.blob();
+                    }
+                    throw new Error('Ошибка скачивания');
+                }).then(blob => {
+                    const url = window.URL.createObjectURL(blob);
+                    link.href = url;
+                    link.download = '';
+                    link.click();
+                    window.URL.revokeObjectURL(url);
+                }).catch(error => {
+                    showError('Ошибка скачивания файла');
+                }).finally(() => {
+                    document.body.removeChild(link);
+                });
+            } else {
+                window.open(`/files/${fileId}?token=${fileToken}`, '_blank');
+            }
         }
 
         async function deleteFile(fileId) {
@@ -334,6 +365,38 @@
             } catch (error) {
                 showError('Ошибка сети');
             }
+        }
+
+        function copyToken(fileToken) {
+            if (navigator.clipboard) {
+                navigator.clipboard.writeText(fileToken).then(() => {
+                    showSuccess('Токен скопирован в буфер обмена');
+                }).catch(() => {
+                    fallbackCopyText(fileToken);
+                });
+            } else {
+                fallbackCopyText(fileToken);
+            }
+        }
+
+        function fallbackCopyText(text) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            
+            try {
+                document.execCommand('copy');
+                showSuccess('Токен скопирован в буфер обмена');
+            } catch (err) {
+                showError('Не удалось скопировать токен');
+            }
+            
+            document.body.removeChild(textArea);
         }
 
         function logout() {

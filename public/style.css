@@ -271,6 +271,12 @@ input[type="file"] {
   border-color: var(--accent-light);
 }
 
+.file-actions {
+  display: flex;
+  gap: 0.5em;
+  flex-wrap: wrap;
+}
+
 .upload-area {
   border: 2px dashed var(--accent);
   padding: 2em;
