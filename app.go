@@ -665,9 +665,12 @@ func (app *App) csrfMiddleware() echo.MiddlewareFunc {
 					return c.JSON(403, map[string]string{"error": "CSRF token required"})
 				}
 
-				app.CSRFMutex.RLock()
+				app.CSRFMutex.Lock()
 				_, exists := app.CSRFTokens[csrfToken]
-				app.CSRFMutex.RUnlock()
+				if exists {
+					delete(app.CSRFTokens, csrfToken)
+				}
+				app.CSRFMutex.Unlock()
 
 				if !exists {
 					return c.JSON(403, map[string]string{"error": "Invalid CSRF token"})
@@ -690,8 +693,22 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 			return []byte(app.Config.JWTSecret), nil
 		})
 
-		if err != nil || !token.Valid {
+		if err != nil {
+			log.Printf("JWT parse error: %v", err)
 			return c.JSON(401, map[string]string{"error": "Invalid token"})
+		}
+
+		if !token.Valid {
+			return c.JSON(401, map[string]string{"error": "Invalid token"})
+		}
+
+		claims, ok := token.Claims.(*TokenClaims)
+		if !ok {
+			return c.JSON(401, map[string]string{"error": "Invalid token claims"})
+		}
+
+		if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
+			return c.JSON(401, map[string]string{"error": "Token expired"})
 		}
 
 		return next(c)
