@@ -317,6 +317,7 @@ func (app *App) Run() {
 		listener, err = net.Listen("tcp", app.Config.SocketPath)
 		log.Printf("mkboxd listening on %s", app.Config.SocketPath)
 	} else {
+		os.Remove(app.Config.SocketPath)
 		listener, err = net.Listen("unix", app.Config.SocketPath)
 		if err == nil {
 			os.Chmod(app.Config.SocketPath, 0666)
