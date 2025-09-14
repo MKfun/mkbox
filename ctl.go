@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,8 @@ func (ctl *Ctl) Run() {
 		ctl.unlockUser(os.Args[3])
 	case "unlock-all":
 		ctl.unlockAll()
+	case "stats":
+		ctl.showStats()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		ctl.showHelp()
@@ -132,6 +135,7 @@ func (ctl *Ctl) showHelp() {
 	fmt.Println("  config                  - показать конфигурацию")
 	fmt.Println("  set-max-size <size>     - установить максимальный размер файла")
 	fmt.Println("  set-max-storage <size>  - установить максимальный размер хранилища")
+	fmt.Println("  stats                   - показать полную статистику и информацию о горутинах")
 }
 
 func (ctl *Ctl) init() {
@@ -649,4 +653,167 @@ func (ctl *Ctl) unlockAll() {
 	} else {
 		fmt.Println("Глобальная блокировка не найдена")
 	}
+}
+
+func (ctl *Ctl) showStats() {
+	fmt.Println("=== mkbox статистика ===")
+	fmt.Println()
+
+	// Информация о системе
+	fmt.Println("Система:")
+	fmt.Printf("  Go версия: %s\n", runtime.Version())
+	fmt.Printf("  ОС: %s\n", runtime.GOOS)
+	fmt.Printf("  Архитектура: %s\n", runtime.GOARCH)
+	fmt.Printf("  Количество CPU: %d\n", runtime.NumCPU())
+	fmt.Printf("  Количество горутин: %d\n", runtime.NumGoroutine())
+	fmt.Println()
+
+	// Информация о памяти
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	fmt.Println("Память:")
+	fmt.Printf("  Выделено: %s\n", formatSize(int64(m.Alloc)))
+	fmt.Printf("  Всего выделено: %s\n", formatSize(int64(m.TotalAlloc)))
+	fmt.Printf("  Системная память: %s\n", formatSize(int64(m.Sys)))
+	fmt.Printf("  Количество сборок мусора: %d\n", m.NumGC)
+	fmt.Printf("  Время последней сборки мусора: %s\n", time.Unix(0, int64(m.LastGC)).Format("2006-01-02 15:04:05"))
+	fmt.Println()
+
+	// Информация о базе данных
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Println("База данных не найдена. Запустите 'mkboxctl init'")
+		return
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Printf("Ошибка подключения к базе данных: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	// Статистика файлов
+	var fileCount int64
+	var totalSize int64
+	var oldestFile time.Time
+	var newestFile time.Time
+
+	db.QueryRow("SELECT COUNT(*) FROM files").Scan(&fileCount)
+	db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files").Scan(&totalSize)
+	db.QueryRow("SELECT MIN(created_at) FROM files").Scan(&oldestFile)
+	db.QueryRow("SELECT MAX(created_at) FROM files").Scan(&newestFile)
+
+	fmt.Println("Файлы:")
+	fmt.Printf("  Количество файлов: %d\n", fileCount)
+	fmt.Printf("  Общий размер: %s\n", formatSize(totalSize))
+	if !oldestFile.IsZero() {
+		fmt.Printf("  Самый старый файл: %s\n", oldestFile.Format("2006-01-02 15:04:05"))
+	}
+	if !newestFile.IsZero() {
+		fmt.Printf("  Самый новый файл: %s\n", newestFile.Format("2006-01-02 15:04:05"))
+	}
+	fmt.Println()
+
+	// Статистика персональных токенов
+	var tokenCount int64
+	var activeTokens int64
+	db.QueryRow("SELECT COUNT(*) FROM personal_tokens").Scan(&tokenCount)
+	db.QueryRow("SELECT COUNT(*) FROM personal_tokens WHERE created_at > datetime('now', '-7 days')").Scan(&activeTokens)
+
+	fmt.Println("Токены:")
+	fmt.Printf("  Всего персональных токенов: %d\n", tokenCount)
+	fmt.Printf("  Активных за последние 7 дней: %d\n", activeTokens)
+	fmt.Println()
+
+	// Статистика блокировок
+	var userLockdowns int64
+	var globalLockdowns int64
+	db.QueryRow("SELECT COUNT(*) FROM lockdowns WHERE type = 'user'").Scan(&userLockdowns)
+	db.QueryRow("SELECT COUNT(*) FROM lockdowns WHERE type = 'all'").Scan(&globalLockdowns)
+
+	fmt.Println("Блокировки:")
+	fmt.Printf("  Заблокированных пользователей: %d\n", userLockdowns)
+	fmt.Printf("  Глобальных блокировок: %d\n", globalLockdowns)
+	fmt.Println()
+
+	// Статистика по типам файлов
+	fmt.Println("Топ-10 типов файлов:")
+	rows, err := db.Query(`
+		SELECT mime_type, COUNT(*) as count, SUM(size) as total_size 
+		FROM files 
+		GROUP BY mime_type 
+		ORDER BY count DESC 
+		LIMIT 10
+	`)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var mimeType string
+			var count int64
+			var size int64
+			rows.Scan(&mimeType, &count, &size)
+			fmt.Printf("  %s: %d файлов (%s)\n", mimeType, count, formatSize(size))
+		}
+	}
+	fmt.Println()
+
+	// Статистика по размерам файлов
+	fmt.Println("Распределение по размерам:")
+	var smallFiles, mediumFiles, largeFiles int64
+	db.QueryRow("SELECT COUNT(*) FROM files WHERE size < 1024*1024").Scan(&smallFiles)                            // < 1MB
+	db.QueryRow("SELECT COUNT(*) FROM files WHERE size >= 1024*1024 AND size < 100*1024*1024").Scan(&mediumFiles) // 1MB - 100MB
+	db.QueryRow("SELECT COUNT(*) FROM files WHERE size >= 100*1024*1024").Scan(&largeFiles)                       // > 100MB
+
+	fmt.Printf("  Малые файлы (< 1MB): %d\n", smallFiles)
+	fmt.Printf("  Средние файлы (1MB - 100MB): %d\n", mediumFiles)
+	fmt.Printf("  Большие файлы (> 100MB): %d\n", largeFiles)
+	fmt.Println()
+
+	// Информация о конфигурации
+	configPath := filepath.Join(ctl.DataDir, "config")
+	if data, err := os.ReadFile(configPath); err == nil {
+		fmt.Println("Конфигурация:")
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if line != "" {
+				parts := strings.SplitN(line, "=", 2)
+				if len(parts) == 2 {
+					switch parts[0] {
+					case "MAX_FILE_SIZE":
+						if size, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+							fmt.Printf("  Максимальный размер файла: %s\n", formatSize(size))
+						}
+					case "MAX_STORAGE_SIZE":
+						if size, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+							fmt.Printf("  Максимальный размер хранилища: %s\n", formatSize(size))
+						}
+					case "MASTER_KEY":
+						if len(parts[1]) >= 8 {
+							fmt.Printf("  Мастер-ключ: %s...\n", parts[1][:8])
+						} else {
+							fmt.Printf("  Мастер-ключ: %s\n", parts[1])
+						}
+					case "JWT_SECRET":
+						if len(parts[1]) >= 8 {
+							fmt.Printf("  JWT секрет: %s...\n", parts[1][:8])
+						} else {
+							fmt.Printf("  JWT секрет: %s\n", parts[1])
+						}
+					}
+				}
+			}
+		}
+	}
+	fmt.Println()
+
+	// Информация о горутинах
+	fmt.Println("Горутины:")
+	fmt.Printf("  Всего горутин: %d\n", runtime.NumGoroutine())
+
+	// Показываем стек горутин
+	buf := make([]byte, 1024*1024)
+	n := runtime.Stack(buf, true)
+	fmt.Println("  Стек горутин:")
+	fmt.Println(string(buf[:n]))
 }

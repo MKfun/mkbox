@@ -37,6 +37,12 @@
                     <input type="file" id="file-input" name="file" required style="display: none;">
                     <button type="button" onclick="document.getElementById('file-input').click()">Выбрать файл</button>
                 </form>
+                <div id="upload-progress" class="upload-progress" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <div class="progress-text" id="progress-text">0%</div>
+                </div>
             </div>
 
             <hr>
@@ -340,29 +346,55 @@
             const formData = new FormData();
             formData.append('file', file);
 
+            const progressContainer = document.getElementById('upload-progress');
+            const progressFill = document.getElementById('progress-fill');
+            const progressText = document.getElementById('progress-text');
+            
+            progressContainer.style.display = 'block';
+            progressFill.style.width = '0%';
+            progressText.textContent = '0%';
+
             try {
                 const csrfResponse = await fetch('/csrf-token');
                 const csrfData = await csrfResponse.json();
                 
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${token}`,
-                        'X-CSRF-Token': csrfData.token
-                    },
-                    body: formData
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percentComplete = (e.loaded / e.total) * 100;
+                        progressFill.style.width = percentComplete + '%';
+                        progressText.textContent = Math.round(percentComplete) + '%';
+                    }
                 });
 
-                const data = await response.json();
-                if (response.ok) {
-                    showSuccess('Файл загружен');
-                    document.getElementById('file-input').value = '';
-                    loadFiles();
-                    loadStats();
-                } else {
-                    showError(data.error || 'Ошибка загрузки');
-                }
+                xhr.addEventListener('load', () => {
+                    progressContainer.style.display = 'none';
+                    
+                    if (xhr.status === 200) {
+                        const data = JSON.parse(xhr.responseText);
+                        showSuccess('Файл загружен');
+                        document.getElementById('file-input').value = '';
+                        loadFiles();
+                        loadStats();
+                    } else {
+                        const data = JSON.parse(xhr.responseText);
+                        showError(data.error || 'Ошибка загрузки');
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    progressContainer.style.display = 'none';
+                    showError('Ошибка сети');
+                });
+
+                xhr.open('POST', '/upload');
+                xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+                xhr.setRequestHeader('X-CSRF-Token', csrfData.token);
+                xhr.send(formData);
+
             } catch (error) {
+                progressContainer.style.display = 'none';
                 showError('Ошибка сети');
             }
         }

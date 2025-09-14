@@ -325,3 +325,46 @@ input[type="file"] {
     background-position: 0% 50%;
   }
 }
+
+.upload-progress {
+  margin-top: 1em;
+  padding: 1em;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 20px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--accent-light);
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-light) 50%, var(--accent) 100%);
+  background-size: 200% 100%;
+  animation: progressShine 2s ease-in-out infinite;
+  transition: width 0.3s ease;
+  width: 0%;
+}
+
+.progress-text {
+  text-align: center;
+  margin-top: 0.5em;
+  font-family: var(--font-family);
+  color: var(--accent-light);
+}
+
+@keyframes progressShine {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}

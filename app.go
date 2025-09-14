@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,12 +40,17 @@ func getEnv(key, defaultValue string) string {
 }
 
 type App struct {
-	DB          *gorm.DB
-	Config      *Config
-	RateLimiter *rate.Limiter
-	AuthLimiter *rate.Limiter
-	CSRFTokens  map[string]time.Time
-	CSRFMutex   sync.RWMutex
+	DB            *gorm.DB
+	Config        *Config
+	RateLimiter   *rate.Limiter
+	AuthLimiter   *rate.Limiter
+	CSRFTokens    map[string]time.Time
+	CSRFMutex     sync.RWMutex
+	FileCache     map[string]File
+	CacheMutex    sync.RWMutex
+	CleanupTicker *time.Ticker
+	StatsCache    map[string]interface{}
+	StatsMutex    sync.RWMutex
 }
 
 type Config struct {
@@ -187,16 +193,21 @@ func NewApp() *App {
 	db.AutoMigrate(&File{}, &PersonalToken{}, &Lockdown{})
 
 	app := &App{
-		DB:          db,
-		Config:      config,
-		RateLimiter: rate.NewLimiter(rate.Limit(10), 20),
-		AuthLimiter: rate.NewLimiter(rate.Limit(5), 10), // 5 запросов в секунду, burst 10
-		CSRFTokens:  make(map[string]time.Time),
+		DB:            db,
+		Config:        config,
+		RateLimiter:   rate.NewLimiter(rate.Limit(10), 20),
+		AuthLimiter:   rate.NewLimiter(rate.Limit(5), 10),
+		CSRFTokens:    make(map[string]time.Time),
+		FileCache:     make(map[string]File),
+		StatsCache:    make(map[string]interface{}),
+		CleanupTicker: time.NewTicker(5 * time.Minute),
 	}
 
 	app.loadConfig()
 
 	go app.cleanupCSRFTokens()
+	go app.cleanupCache()
+	go app.preloadStats()
 
 	return app
 }
@@ -248,10 +259,7 @@ func (app *App) saveConfig() {
 }
 
 func (app *App) cleanupCSRFTokens() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
+	for range app.CleanupTicker.C {
 		now := time.Now()
 		app.CSRFMutex.Lock()
 		for token, expiry := range app.CSRFTokens {
@@ -261,6 +269,69 @@ func (app *App) cleanupCSRFTokens() {
 		}
 		app.CSRFMutex.Unlock()
 	}
+}
+
+func (app *App) cleanupCache() {
+	for range app.CleanupTicker.C {
+		app.CacheMutex.Lock()
+		cutoff := time.Now().Add(-1 * time.Hour)
+		for id, file := range app.FileCache {
+			if file.CreatedAt.Before(cutoff) {
+				delete(app.FileCache, id)
+			}
+		}
+		app.CacheMutex.Unlock()
+	}
+}
+
+func (app *App) preloadStats() {
+	for range time.Tick(30 * time.Second) {
+		app.updateStatsCache()
+	}
+}
+
+func (app *App) updateStatsCache() {
+	var count int64
+	var totalSize int64
+
+	if err := app.DB.Model(&File{}).Count(&count).Error; err != nil {
+		return
+	}
+
+	if err := app.DB.Model(&File{}).Select("COALESCE(SUM(size), 0)").Scan(&totalSize).Error; err != nil {
+		return
+	}
+
+	app.StatsMutex.Lock()
+	app.StatsCache["file_count"] = count
+	app.StatsCache["total_size"] = totalSize
+	app.StatsCache["last_updated"] = time.Now()
+	app.StatsMutex.Unlock()
+}
+
+func (app *App) getCachedFile(fileID string) (File, bool) {
+	app.CacheMutex.RLock()
+	defer app.CacheMutex.RUnlock()
+	file, exists := app.FileCache[fileID]
+	return file, exists
+}
+
+func (app *App) setCachedFile(file File) {
+	app.CacheMutex.Lock()
+	defer app.CacheMutex.Unlock()
+	app.FileCache[file.ID] = file
+}
+
+func (app *App) getCachedStats() (map[string]interface{}, bool) {
+	app.StatsMutex.RLock()
+	defer app.StatsMutex.RUnlock()
+
+	if lastUpdated, ok := app.StatsCache["last_updated"].(time.Time); ok {
+		if time.Since(lastUpdated) < 30*time.Second {
+			return app.StatsCache, true
+		}
+	}
+	return nil, false
 }
 
 func (app *App) validateFileJWT(tokenString, fileID string) bool {
@@ -277,12 +348,10 @@ func (app *App) validateFileJWT(tokenString, fileID string) bool {
 		return false
 	}
 
-	// Проверяем тип токена и привязку к файлу
 	if claims.Type != "file_access" || claims.FileID != fileID {
 		return false
 	}
 
-	// Проверяем срок действия
 	if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
 		return false
 	}
@@ -331,7 +400,6 @@ func (app *App) Run() {
 
 	e.Static("/files", filepath.Join(app.Config.DataDir, "files"))
 
-	// Встроенные статические файлы
 	e.GET("/style.css", app.handleStatic("public/style.css"))
 	e.GET("/background.js", app.handleStatic("public/background.js"))
 	e.GET("/end-portal-*.png", app.handlePNG)
@@ -344,6 +412,7 @@ func (app *App) Run() {
 	e.DELETE("/files/:id", app.handleDelete, app.authMiddleware, app.csrfMiddleware())
 	e.GET("/api/files", app.handleListFiles, app.authMiddleware)
 	e.GET("/api/stats", app.handleStats, app.authMiddleware)
+	e.GET("/api/detailed-stats", app.handleDetailedStats, app.authMiddleware)
 
 	var listener net.Listener
 	var err error
@@ -414,14 +483,82 @@ func (app *App) handlePNG(c echo.Context) error {
 }
 
 func (app *App) handleListFiles(c echo.Context) error {
-	var files []File
-	if err := app.DB.Find(&files).Error; err != nil {
-		return c.JSON(500, map[string]string{"error": "Failed to list files"})
+	// жопа.
+	auth := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return c.JSON(401, map[string]string{"error": "Missing authorization"})
 	}
+
+	tokenString := strings.TrimPrefix(auth, "Bearer ")
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(app.Config.JWTSecret), nil
+	})
+
+	if err != nil || !token.Valid {
+		return c.JSON(401, map[string]string{"error": "Invalid token"})
+	}
+
+	claims, ok := token.Claims.(*TokenClaims)
+	if !ok || claims.FileID != "" {
+		return c.JSON(403, map[string]string{"error": "Admin access required"})
+	}
+
+	var files []File
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.DB.Find(&files).Error
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return c.JSON(500, map[string]string{"error": "Failed to list files"})
+		}
+	case <-time.After(5 * time.Second):
+		return c.JSON(500, map[string]string{"error": "Request timeout"})
+	}
+
 	return c.JSON(200, files)
 }
 
 func (app *App) handleStats(c echo.Context) error {
+	// чекаю, это мастер-ключ или не
+	auth := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return c.JSON(401, map[string]string{"error": "Missing authorization"})
+	}
+
+	tokenString := strings.TrimPrefix(auth, "Bearer ")
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(app.Config.JWTSecret), nil
+	})
+
+	if err != nil || !token.Valid {
+		return c.JSON(401, map[string]string{"error": "Invalid token"})
+	}
+
+	claims, ok := token.Claims.(*TokenClaims)
+	if !ok || claims.FileID != "" {
+		return c.JSON(403, map[string]string{"error": "Admin access required"})
+	}
+
+	if stats, ok := app.getCachedStats(); ok {
+		return c.JSON(200, map[string]interface{}{
+			"file_count": stats["file_count"],
+			"total_size": stats["total_size"],
+		})
+	}
+
+	app.updateStatsCache()
+
+	if stats, ok := app.getCachedStats(); ok {
+		return c.JSON(200, map[string]interface{}{
+			"file_count": stats["file_count"],
+			"total_size": stats["total_size"],
+		})
+	}
+
 	var count int64
 	var totalSize int64
 
@@ -436,6 +573,118 @@ func (app *App) handleStats(c echo.Context) error {
 	return c.JSON(200, map[string]interface{}{
 		"file_count": count,
 		"total_size": totalSize,
+	})
+}
+
+func (app *App) handleDetailedStats(c echo.Context) error {
+	auth := c.Request().Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return c.JSON(401, map[string]string{"error": "Missing authorization"})
+	}
+
+	tokenString := strings.TrimPrefix(auth, "Bearer ")
+	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(app.Config.JWTSecret), nil
+	})
+
+	if err != nil || !token.Valid {
+		return c.JSON(401, map[string]string{"error": "Invalid token"})
+	}
+
+	// Дополнительная проверка - только мастер-ключ может получить детальную статистику
+	// Проверяем, что токен был создан с мастер-ключом (не персональный токен)
+	claims, ok := token.Claims.(*TokenClaims)
+	if !ok || claims.FileID != "" {
+		return c.JSON(403, map[string]string{"error": "Admin access required"})
+	}
+
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+
+	var fileCount int64
+	var totalSize int64
+	var oldestFile time.Time
+	var newestFile time.Time
+
+	app.DB.Model(&File{}).Count(&fileCount)
+	app.DB.Model(&File{}).Select("COALESCE(SUM(size), 0)").Scan(&totalSize)
+	app.DB.Model(&File{}).Select("MIN(created_at)").Scan(&oldestFile)
+	app.DB.Model(&File{}).Select("MAX(created_at)").Scan(&newestFile)
+
+	var tokenCount int64
+	var activeTokens int64
+	app.DB.Model(&PersonalToken{}).Count(&tokenCount)
+	app.DB.Model(&PersonalToken{}).Where("created_at > ?", time.Now().Add(-7*24*time.Hour)).Count(&activeTokens)
+
+	var userLockdowns int64
+	var globalLockdowns int64
+	app.DB.Model(&Lockdown{}).Where("type = ?", "user").Count(&userLockdowns)
+	app.DB.Model(&Lockdown{}).Where("type = ?", "all").Count(&globalLockdowns)
+
+	var mimeStats []struct {
+		MimeType  string `json:"mime_type"`
+		Count     int64  `json:"count"`
+		TotalSize int64  `json:"total_size"`
+	}
+	app.DB.Model(&File{}).Select("mime_type, COUNT(*) as count, SUM(size) as total_size").
+		Group("mime_type").Order("count DESC").Limit(10).Scan(&mimeStats)
+
+	var smallFiles, mediumFiles, largeFiles int64
+	app.DB.Model(&File{}).Where("size < ?", 1024*1024).Count(&smallFiles)
+	app.DB.Model(&File{}).Where("size >= ? AND size < ?", 1024*1024, 100*1024*1024).Count(&mediumFiles)
+	app.DB.Model(&File{}).Where("size >= ?", 100*1024*1024).Count(&largeFiles)
+
+	app.CacheMutex.RLock()
+	cacheSize := len(app.FileCache)
+	app.CacheMutex.RUnlock()
+
+	app.StatsMutex.RLock()
+	statsCacheSize := len(app.StatsCache)
+	app.StatsMutex.RUnlock()
+
+	return c.JSON(200, map[string]interface{}{
+		"system": map[string]interface{}{
+			"go_version":     runtime.Version(),
+			"os":             runtime.GOOS,
+			"arch":           runtime.GOARCH,
+			"num_cpu":        runtime.NumCPU(),
+			"num_goroutines": runtime.NumGoroutine(),
+			"memory": map[string]interface{}{
+				"alloc":       m.Alloc,
+				"total_alloc": m.TotalAlloc,
+				"sys":         m.Sys,
+				"num_gc":      m.NumGC,
+				"last_gc":     m.LastGC,
+			},
+		},
+		"files": map[string]interface{}{
+			"count":      fileCount,
+			"total_size": totalSize,
+			"oldest":     oldestFile,
+			"newest":     newestFile,
+			"size_distribution": map[string]int64{
+				"small":  smallFiles,
+				"medium": mediumFiles,
+				"large":  largeFiles,
+			},
+			"mime_types": mimeStats,
+		},
+		"tokens": map[string]interface{}{
+			"total":  tokenCount,
+			"active": activeTokens,
+		},
+		"lockdowns": map[string]interface{}{
+			"users":  userLockdowns,
+			"global": globalLockdowns,
+		},
+		"cache": map[string]interface{}{
+			"file_cache_size":  cacheSize,
+			"stats_cache_size": statsCacheSize,
+		},
+		"config": map[string]interface{}{
+			"max_file_size":    app.Config.MaxFileSize,
+			"max_storage_size": app.Config.MaxStorageSize,
+		},
 	})
 }
 
@@ -468,9 +717,19 @@ func (app *App) handleAuth(c echo.Context) error {
 }
 
 func (app *App) handleUpload(c echo.Context) error {
-	var globalLockdown Lockdown
-	if err := app.DB.Where("type = ?", "all").First(&globalLockdown).Error; err == nil {
-		return c.JSON(403, map[string]string{"error": "Uploads are disabled", "message": globalLockdown.Message})
+	lockdownChan := make(chan error, 1)
+	go func() {
+		var globalLockdown Lockdown
+		lockdownChan <- app.DB.Where("type = ?", "all").First(&globalLockdown).Error
+	}()
+
+	select {
+	case err := <-lockdownChan:
+		if err == nil {
+			return c.JSON(403, map[string]string{"error": "Uploads are disabled"})
+		}
+	case <-time.After(2 * time.Second):
+		return c.JSON(500, map[string]string{"error": "Database timeout"})
 	}
 
 	personalToken := c.Request().Header.Get("X-Personal-Token")
@@ -482,15 +741,35 @@ func (app *App) handleUpload(c echo.Context) error {
 			return c.JSON(400, map[string]string{"error": "Invalid personal token"})
 		}
 
-		var userLockdown Lockdown
-		if err := app.DB.Where("type = ? AND token = ?", "user", personalToken).First(&userLockdown).Error; err == nil {
-			return c.JSON(403, map[string]string{"error": "User uploads are disabled", "message": userLockdown.Message})
+		userLockdownChan := make(chan error, 1)
+		go func() {
+			var userLockdown Lockdown
+			userLockdownChan <- app.DB.Where("type = ? AND token = ?", "user", personalToken).First(&userLockdown).Error
+		}()
+
+		select {
+		case err := <-userLockdownChan:
+			if err == nil {
+				return c.JSON(403, map[string]string{"error": "User uploads are disabled"})
+			}
+		case <-time.After(2 * time.Second):
+			return c.JSON(500, map[string]string{"error": "Database timeout"})
 		}
 
-		if err := app.DB.Where("token = ?", personalToken).First(&personalTokenRecord).Error; err != nil {
-			return c.JSON(401, map[string]string{"error": "Invalid personal token"})
+		tokenChan := make(chan error, 1)
+		go func() {
+			tokenChan <- app.DB.Where("token = ?", personalToken).First(&personalTokenRecord).Error
+		}()
+
+		select {
+		case err := <-tokenChan:
+			if err != nil {
+				return c.JSON(401, map[string]string{"error": "Invalid personal token"})
+			}
+			personalTokenID = personalTokenRecord.ID
+		case <-time.After(2 * time.Second):
+			return c.JSON(500, map[string]string{"error": "Database timeout"})
 		}
-		personalTokenID = personalTokenRecord.ID
 	} else {
 		tempToken := generateSecureToken(32)
 		clientIP := c.RealIP()
@@ -507,10 +786,20 @@ func (app *App) handleUpload(c echo.Context) error {
 			CreatedAt: time.Now(),
 		}
 
-		if err := app.DB.Create(&personalTokenRecord).Error; err != nil {
-			return c.JSON(500, map[string]string{"error": "Failed to create temporary token"})
+		tokenCreateChan := make(chan error, 1)
+		go func() {
+			tokenCreateChan <- app.DB.Create(&personalTokenRecord).Error
+		}()
+
+		select {
+		case err := <-tokenCreateChan:
+			if err != nil {
+				return c.JSON(500, map[string]string{"error": "Failed to create temporary token"})
+			}
+			personalTokenID = personalTokenRecord.ID
+		case <-time.After(3 * time.Second):
+			return c.JSON(500, map[string]string{"error": "Database timeout"})
 		}
-		personalTokenID = personalTokenRecord.ID
 	}
 
 	file, err := c.FormFile("file")
@@ -594,12 +883,25 @@ func (app *App) handleUpload(c echo.Context) error {
 		CreatedAt:       time.Now(),
 	}
 
-	if err := app.DB.Create(&fileRecord).Error; err != nil {
+	dbSaveChan := make(chan error, 1)
+	go func() {
+		dbSaveChan <- app.DB.Create(&fileRecord).Error
+	}()
+
+	select {
+	case err := <-dbSaveChan:
+		if err != nil {
+			os.Remove(filePath)
+			return c.JSON(500, map[string]string{"error": "Failed to save file record"})
+		}
+	case <-time.After(5 * time.Second):
 		os.Remove(filePath)
-		return c.JSON(500, map[string]string{"error": "Failed to save file record"})
+		return c.JSON(500, map[string]string{"error": "Database timeout"})
 	}
 
-	app.cleanupOldFiles()
+	app.setCachedFile(fileRecord)
+
+	go app.cleanupOldFiles()
 
 	return c.JSON(200, map[string]interface{}{
 		"id":        fileID,
@@ -618,24 +920,33 @@ func (app *App) handleDownload(c echo.Context) error {
 		return c.JSON(400, map[string]string{"error": "Invalid file ID"})
 	}
 
-	// Проверяем JWT токен в заголовке или query параметре
 	jwtToken := c.Request().Header.Get("X-File-Token")
 	if jwtToken == "" {
 		jwtToken = c.QueryParam("token")
 	}
 
 	var file File
-	if err := app.DB.Where("id = ?", fileID).First(&file).Error; err != nil {
+	var found bool
+	if cachedFile, ok := app.getCachedFile(fileID); ok {
+		file = cachedFile
+		found = true
+	} else {
+		if err := app.DB.Where("id = ?", fileID).First(&file).Error; err != nil {
+			return c.JSON(404, map[string]string{"error": "File not found"})
+		}
+		found = true
+		app.setCachedFile(file)
+	}
+
+	if !found {
 		return c.JSON(404, map[string]string{"error": "File not found"})
 	}
 
-	// Если есть JWT токен, проверяем его
 	if jwtToken != "" {
 		if !app.validateFileJWT(jwtToken, fileID) {
 			return c.JSON(403, map[string]string{"error": "Invalid file token"})
 		}
 	} else {
-		// Fallback на старый способ с обычным токеном
 		regularToken := c.QueryParam("token")
 		if regularToken == "" || regularToken != file.Token {
 			return c.JSON(403, map[string]string{"error": "File token required"})
@@ -667,8 +978,16 @@ func (app *App) handleDelete(c echo.Context) error {
 		return c.JSON(400, map[string]string{"error": "Invalid file path"})
 	}
 
-	os.Remove(filePath)
 	app.DB.Delete(&file)
+
+	app.CacheMutex.Lock()
+	delete(app.FileCache, fileID)
+	app.CacheMutex.Unlock()
+
+	go func() {
+		os.Remove(filePath)
+	}()
+
 	return c.JSON(200, map[string]string{"message": "File deleted"})
 }
 
@@ -709,8 +1028,18 @@ func (app *App) handleCreateToken(c echo.Context) error {
 		CreatedAt: time.Now(),
 	}
 
-	if err := app.DB.Create(&personalToken).Error; err != nil {
-		return c.JSON(500, map[string]string{"error": "Failed to create token"})
+	tokenCreateChan := make(chan error, 1)
+	go func() {
+		tokenCreateChan <- app.DB.Create(&personalToken).Error
+	}()
+
+	select {
+	case err := <-tokenCreateChan:
+		if err != nil {
+			return c.JSON(500, map[string]string{"error": "Failed to create token"})
+		}
+	case <-time.After(3 * time.Second):
+		return c.JSON(500, map[string]string{"error": "Database timeout"})
 	}
 
 	return c.JSON(200, map[string]string{"token": token})
