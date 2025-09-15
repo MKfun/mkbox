@@ -1,7 +1,7 @@
 FROM node:20-bookworm AS frontend-builder
 
 WORKDIR /app
-COPY package.json pnpm-lock.yaml ./
+COPY package.json ./
 RUN npm install -g pnpm && pnpm install
 
 COPY src/ ./src/

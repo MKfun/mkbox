@@ -153,6 +153,10 @@ func (ctl *Ctl) Run() {
 			return
 		}
 		ctl.cleanupOldFiles(days)
+	case "sessions":
+		ctl.listSessions()
+	case "sessions-cleanup":
+		ctl.cleanupSessions()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		ctl.showHelp()
@@ -190,6 +194,8 @@ func (ctl *Ctl) showHelp() {
 	fmt.Println("  cache-stats             - статистика кеша")
 	fmt.Println("  orphaned-files          - найти файлы без записей в БД")
 	fmt.Println("  cleanup-old <days>      - удалить файлы старше N дней")
+	fmt.Println("  sessions                - список активных сессий")
+	fmt.Println("  sessions-cleanup        - очистить истёкшие сессии")
 }
 
 func (ctl *Ctl) init() {
@@ -1310,4 +1316,69 @@ func (ctl *Ctl) cleanupOldFiles(days int) {
 
 	fmt.Printf("\nУдалено файлов: %d\n", deletedCount)
 	fmt.Printf("Освобождено места: %s\n", formatSize(deletedSize))
+}
+
+func (ctl *Ctl) listSessions() {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+
+	fmt.Println("Активные сессии:")
+	fmt.Printf("%-36s %-15s %-20s %-20s %-20s\n", "ID", "IP", "User Agent", "Создана", "Истекает")
+	fmt.Println(strings.Repeat("-", 120))
+
+	rows, err := db.Query("SELECT id, token, ip, user_agent, created_at, expires_at FROM session_tokens WHERE expires_at > ? ORDER BY created_at DESC", time.Now())
+	if err != nil {
+		fmt.Printf("Ошибка получения сессий: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	sessionCount := 0
+	for rows.Next() {
+		var id, token, ip, userAgent string
+		var createdAt, expiresAt time.Time
+
+		if err := rows.Scan(&id, &token, &ip, &userAgent, &createdAt, &expiresAt); err != nil {
+			fmt.Printf("Ошибка чтения сессии: %v\n", err)
+			continue
+		}
+
+		if len(userAgent) > 20 {
+			userAgent = userAgent[:17] + "..."
+		}
+
+		createdStr := createdAt.Format("2006-01-02 15:04:05")
+		expiresStr := expiresAt.Format("2006-01-02 15:04:05")
+
+		fmt.Printf("%-36s %-15s %-20s %-20s %-20s\n", id, ip, userAgent, createdStr, expiresStr)
+		sessionCount++
+	}
+
+	if sessionCount == 0 {
+		fmt.Println("Активные сессии не найдены")
+	} else {
+		fmt.Printf("\nВсего активных сессий: %d\n", sessionCount)
+	}
+}
+
+func (ctl *Ctl) cleanupSessions() {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+
+	result, err := db.Exec("DELETE FROM session_tokens WHERE expires_at < ?", time.Now())
+	if err != nil {
+		fmt.Printf("Ошибка очистки сессий: %v\n", err)
+		return
+	}
+
+	rowsAffected, _ := result.RowsAffected()
+	fmt.Printf("Удалено истёкших сессий: %d\n", rowsAffected)
 }

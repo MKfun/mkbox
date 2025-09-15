@@ -15,6 +15,7 @@ export interface Stats {
 
 export interface AuthResponse {
   token: string;
+  personal_token: string;
 }
 
 export interface CreatePasteResponse {
@@ -29,9 +30,11 @@ export interface CsrfResponse {
 
 export class ApiClient {
   private token: string | null = null;
+  private personalToken: string | null = null;
 
   constructor() {
     this.token = localStorage.getItem('mkbox_token');
+    this.personalToken = localStorage.getItem('mkbox_personal_token');
   }
 
   setToken(token: string) {
@@ -39,9 +42,16 @@ export class ApiClient {
     localStorage.setItem('mkbox_token', token);
   }
 
+  setPersonalToken(personalToken: string) {
+    this.personalToken = personalToken;
+    localStorage.setItem('mkbox_personal_token', personalToken);
+  }
+
   clearToken() {
     this.token = null;
+    this.personalToken = null;
     localStorage.removeItem('mkbox_token');
+    localStorage.removeItem('mkbox_personal_token');
   }
 
   private async getCsrfToken(): Promise<string> {
@@ -55,11 +65,14 @@ export class ApiClient {
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
+    if (this.personalToken) {
+      headers['X-Personal-Token'] = this.personalToken;
+    }
     return headers;
   }
 
   async checkToken(): Promise<boolean> {
-    if (!this.token) return false;
+    if (!this.token || !this.personalToken) return false;
 
     try {
       const response = await fetch('/api/stats', {
@@ -89,6 +102,7 @@ export class ApiClient {
     }
 
     this.setToken(data.token);
+    this.setPersonalToken(data.personal_token);
     return data;
   }
 
@@ -204,6 +218,9 @@ export class ApiClient {
       xhr.open('POST', '/upload');
       xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
       xhr.setRequestHeader('X-CSRF-Token', csrfToken);
+      if (this.personalToken) {
+        xhr.setRequestHeader('X-Personal-Token', this.personalToken);
+      }
       xhr.send(formData);
     });
   }

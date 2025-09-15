@@ -82,6 +82,15 @@ type PersonalToken struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type SessionToken struct {
+	ID        string    `gorm:"primaryKey" json:"id"`
+	Token     string    `gorm:"uniqueIndex" json:"token"`
+	IP        string    `json:"ip"`
+	UserAgent string    `json:"user_agent"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type Lockdown struct {
 	ID        string    `gorm:"primaryKey" json:"id"`
 	Type      string    `json:"type"`  // "user" или "all"
@@ -206,7 +215,7 @@ func NewApp() *App {
 		log.Fatal(err)
 	}
 
-	db.AutoMigrate(&File{}, &PersonalToken{}, &Lockdown{}, &Paste{})
+	db.AutoMigrate(&File{}, &PersonalToken{}, &SessionToken{}, &Lockdown{}, &Paste{})
 
 	app := &App{
 		DB:            db,
@@ -224,6 +233,7 @@ func NewApp() *App {
 
 	go app.cleanupCSRFTokens()
 	go app.cleanupCache()
+	go app.cleanupSessions()
 	go app.preloadStats()
 
 	return app
@@ -306,6 +316,12 @@ func (app *App) cleanupCache() {
 			delete(app.FileCache, id)
 		}
 		app.CacheMutex.Unlock()
+	}
+}
+
+func (app *App) cleanupSessions() {
+	for range app.CleanupTicker.C {
+		app.DB.Where("expires_at < ?", time.Now()).Delete(&SessionToken{})
 	}
 }
 
@@ -542,34 +558,20 @@ func (app *App) handleFavicon(c echo.Context) error {
 }
 
 func (app *App) handleListFiles(c echo.Context) error {
-	// жопа.
-	auth := c.Request().Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return c.JSON(401, map[string]string{"error": "Missing authorization"})
+	personalToken := c.Request().Header.Get("X-Personal-Token")
+	if personalToken == "" {
+		return c.JSON(400, map[string]string{"error": "Personal token required"})
 	}
 
-	tokenString := strings.TrimPrefix(auth, "Bearer ")
-	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(app.Config.JWTSecret), nil
-	})
-
-	if err != nil || !token.Valid {
-		return c.JSON(401, map[string]string{"error": "Invalid token"})
-	}
-
-	claims, ok := token.Claims.(*TokenClaims)
-	if !ok || claims.FileID != "" {
-		return c.JSON(403, map[string]string{"error": "Admin access required"})
+	var personalTokenRecord PersonalToken
+	if err := app.DB.Where("token = ?", personalToken).First(&personalTokenRecord).Error; err != nil {
+		return c.JSON(401, map[string]string{"error": "Invalid personal token"})
 	}
 
 	var files []File
-
 	done := make(chan error, 1)
 	go func() {
-		done <- app.DB.Find(&files).Error
+		done <- app.DB.Where("personal_token_id = ?", personalTokenRecord.ID).Find(&files).Error
 	}()
 
 	select {
@@ -585,29 +587,6 @@ func (app *App) handleListFiles(c echo.Context) error {
 }
 
 func (app *App) handleStats(c echo.Context) error {
-	// чекаю, это мастер-ключ или не
-	auth := c.Request().Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return c.JSON(401, map[string]string{"error": "Missing authorization"})
-	}
-
-	tokenString := strings.TrimPrefix(auth, "Bearer ")
-	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
-		return []byte(app.Config.JWTSecret), nil
-	})
-
-	if err != nil || !token.Valid {
-		return c.JSON(401, map[string]string{"error": "Invalid token"})
-	}
-
-	claims, ok := token.Claims.(*TokenClaims)
-	if !ok || claims.FileID != "" {
-		return c.JSON(403, map[string]string{"error": "Admin access required"})
-	}
-
 	if stats, ok := app.getCachedStats(); ok {
 		return c.JSON(200, map[string]interface{}{
 			"file_count": stats["file_count"],
@@ -655,18 +634,44 @@ func (app *App) handleAuth(c echo.Context) error {
 		return c.JSON(401, map[string]string{"error": "Invalid key"})
 	}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, TokenClaims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-		},
-	})
-
-	tokenString, err := token.SignedString([]byte(app.Config.JWTSecret))
-	if err != nil {
-		return c.JSON(500, map[string]string{"error": "Failed to create token"})
+	clientIP := c.RealIP()
+	userAgent := c.Request().Header.Get("User-Agent")
+	if len(userAgent) > 200 {
+		userAgent = userAgent[:200]
 	}
 
-	return c.JSON(200, map[string]string{"token": tokenString})
+	personalToken := generateSecureToken(32)
+	personalTokenRecord := PersonalToken{
+		ID:        uuid.New().String(),
+		Token:     personalToken,
+		IP:        clientIP,
+		UserAgent: userAgent,
+		CreatedAt: time.Now(),
+	}
+
+	if err := app.DB.Create(&personalTokenRecord).Error; err != nil {
+		return c.JSON(500, map[string]string{"error": "Failed to create personal token"})
+	}
+
+	sessionToken := generateSecureToken(32)
+	session := SessionToken{
+		ID:        uuid.New().String(),
+		Token:     sessionToken,
+		IP:        clientIP,
+		UserAgent: userAgent,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
+
+	if err := app.DB.Create(&session).Error; err != nil {
+		app.DB.Delete(&personalTokenRecord)
+		return c.JSON(500, map[string]string{"error": "Failed to create session"})
+	}
+
+	return c.JSON(200, map[string]interface{}{
+		"token":          sessionToken,
+		"personal_token": personalToken,
+	})
 }
 
 func (app *App) handleUpload(c echo.Context) error {
@@ -1127,29 +1132,10 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		}
 
 		tokenString := strings.TrimPrefix(auth, "Bearer ")
-		token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-			}
-			return []byte(app.Config.JWTSecret), nil
-		})
 
-		if err != nil {
-			log.Printf("JWT parse error: %v", err)
-			return c.JSON(401, map[string]string{"error": "Invalid token"})
-		}
-
-		if !token.Valid {
-			return c.JSON(401, map[string]string{"error": "Invalid token"})
-		}
-
-		claims, ok := token.Claims.(*TokenClaims)
-		if !ok {
-			return c.JSON(401, map[string]string{"error": "Invalid token claims"})
-		}
-
-		if claims.ExpiresAt != nil && claims.ExpiresAt.Time.Before(time.Now()) {
-			return c.JSON(401, map[string]string{"error": "Token expired"})
+		var session SessionToken
+		if err := app.DB.Where("token = ? AND expires_at > ?", tokenString, time.Now()).First(&session).Error; err != nil {
+			return c.JSON(401, map[string]string{"error": "Invalid or expired token"})
 		}
 
 		return next(c)
