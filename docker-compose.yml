@@ -2,7 +2,7 @@ services:
   mkbox:
     build: .
     volumes:
-      - mkbox_data:/var/lib/mkbox
+      - ./mkbox_data:/var/lib/mkbox
       - /tmp/mkbox-run:/var/run
     environment:
       - MBOX_SOCKET_PATH=/var/run/mkbox/mkbox.sock
