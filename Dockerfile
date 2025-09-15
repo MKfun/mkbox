@@ -1,4 +1,4 @@
-FROM node:20-alpine AS frontend-builder
+FROM node:20-bookworm AS frontend-builder
 
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
@@ -8,9 +8,12 @@ COPY src/ ./src/
 COPY tsconfig.json ./
 RUN pnpm run build
 
-FROM golang:1.23.5-alpine AS go-builder
+FROM golang:1.23.5-bookworm AS go-builder
 
-RUN apk --no-cache add gcc musl-dev sqlite-dev
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      build-essential pkg-config && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -19,25 +22,30 @@ COPY . .
 COPY --from=frontend-builder /app/public ./public
 RUN CGO_ENABLED=1 go build -o mkbox .
 
-FROM alpine:3.19
+FROM debian:bookworm-slim
 
-RUN apk --no-cache add ca-certificates sqlite
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      ca-certificates gosu && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 COPY --from=go-builder /app/mkbox .
 COPY --from=go-builder /app/public ./public
 
-RUN adduser -D -s /bin/sh mkbox && \
+RUN useradd -m -s /usr/sbin/nologin mkbox && \
     mkdir -p /var/lib/mkbox/files /var/run && \
     chown -R mkbox:mkbox /var/lib/mkbox /var/run && \
     chmod 700 /var/lib/mkbox && \
     chmod 755 /var/run
 
-USER mkbox
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
-EXPOSE 8080
+USER root
 
 ENV MBOX_SOCKET_PATH=/var/run/mkbox/mkbox.sock
 ENV MBOX_DATA_DIR=/var/lib/mkbox
 
-CMD ["./mkbox", "-daemon"]
+ENTRYPOINT ["./entrypoint.sh"]
+CMD ["-daemon"]
