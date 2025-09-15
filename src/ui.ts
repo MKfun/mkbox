@@ -52,7 +52,7 @@ export class UIManager {
     this.statusText.textContent = `сейчас залито ${fileCount} файлов. диск засрали на ${totalSize}.`;
   }
 
-  displayFiles(files: Array<{ id: string; filename: string; size: number; created_at: string; jwt_token?: string; token?: string }>) {
+  displayFiles(files: Array<{ id: string; filename: string; size: number; created_at: string; jwt_token?: string; token?: string; public?: boolean }>) {
     if (files.length === 0) {
       this.filesList.innerHTML = '<p>файлы не найдены</p>';
       return;
@@ -65,7 +65,7 @@ export class UIManager {
         <span>${new Date(file.created_at).toLocaleString()}</span>
         <div class="file-actions">
           <button onclick="window.fileManager.downloadFile('${file.id}', '${file.jwt_token || file.token}')">скачать</button>
-          <button onclick="window.fileManager.copyToken('${file.jwt_token || file.token}')">скопировать токен</button>
+          <button onclick="window.fileManager.copyFileLink('${file.id}', '${file.jwt_token || file.token}')">копировать ссылку</button>
           <button onclick="window.fileManager.deleteFile('${file.id}')">удалить</button>
         </div>
       </div>

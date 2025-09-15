@@ -5,6 +5,7 @@ export interface FileInfo {
   created_at: string;
   jwt_token?: string;
   token?: string;
+  public?: boolean;
 }
 
 export interface Stats {
@@ -129,6 +130,21 @@ export class ApiClient {
     if (!response.ok) {
       const data = await response.json();
       throw new Error(data.error || 'ошибка удаления');
+    }
+  }
+
+  async makeFilePublic(fileId: string): Promise<void> {
+    const csrfToken = await this.getCsrfToken();
+    const response = await fetch(`/files/${fileId}/public`, {
+      method: 'POST',
+      headers: {
+        ...this.getAuthHeaders(),
+        'X-CSRF-Token': csrfToken
+      }
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || 'ошибка публикации файла');
     }
   }
 

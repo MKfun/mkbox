@@ -40,7 +40,29 @@ export class FileManager {
         document.body.removeChild(link);
       }
     } else {
-      window.open(`/files/${fileId}?token=${fileToken}`, '_blank');
+      const link = document.createElement('a');
+      link.href = `/files/${fileId}?token=${fileToken}`;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      
+      try {
+        const response = await fetch(`/files/${fileId}?token=${fileToken}`);
+        
+        if (response.ok) {
+          const blob = await response.blob();
+          const url = window.URL.createObjectURL(blob);
+          link.href = url;
+          link.download = '';
+          link.click();
+          window.URL.revokeObjectURL(url);
+        } else {
+          throw new Error('ошибка скачивания');
+        }
+      } catch (error) {
+        this.ui.showError('ошибка скачивания файла');
+      } finally {
+        document.body.removeChild(link);
+      }
     }
   }
 
@@ -57,16 +79,17 @@ export class FileManager {
     }
   }
 
-  async copyToken(fileToken: string) {
+  async copyFileLink(fileId: string, fileToken: string) {
+    const fileUrl = `${window.location.origin}/files/${fileId}`;
     try {
       if (navigator.clipboard) {
-        await navigator.clipboard.writeText(fileToken);
-        this.ui.showSuccess('токен скопирован в буфер обмена');
+        await navigator.clipboard.writeText(fileUrl);
+        this.ui.showSuccess('ссылка скопирована в буфер обмена');
       } else {
-        this.fallbackCopyText(fileToken);
+        this.fallbackCopyText(fileUrl);
       }
     } catch (error) {
-      this.fallbackCopyText(fileToken);
+      this.fallbackCopyText(fileUrl);
     }
   }
 
@@ -82,9 +105,9 @@ export class FileManager {
     
     try {
       document.execCommand('copy');
-      this.ui.showSuccess('токен скопирован в буфер обмена');
+      this.ui.showSuccess('ссылка скопирована в буфер обмена');
     } catch (err) {
-      this.ui.showError('не удалось скопировать токен');
+      this.ui.showError('не удалось скопировать ссылку');
     }
     
     document.body.removeChild(textArea);
@@ -116,6 +139,16 @@ export class FileManager {
       this.ui.displayFiles(files);
     } catch (error) {
       console.error('ошибка загрузки файлов:', error);
+    }
+  }
+
+  async makePublic(fileId: string) {
+    try {
+      await this.api.makeFilePublic(fileId);
+      this.ui.showSuccess('файл стал публичным');
+      await this.loadFiles();
+    } catch (error) {
+      this.ui.showError(error instanceof Error ? error.message : 'ошибка публикации');
     }
   }
 

@@ -71,6 +71,7 @@ type File struct {
 	MimeType        string    `json:"mime_type"`
 	PersonalTokenID string    `json:"personal_token_id"`
 	CreatedAt       time.Time `json:"created_at"`
+	Public          bool      `json:"public" gorm:"index"`
 }
 
 type PersonalToken struct {
@@ -444,6 +445,7 @@ func (app *App) Run() {
 	e.POST("/create-token", app.handleCreateToken, app.authRateLimitMiddleware(), app.csrfMiddleware())
 	e.POST("/upload", app.handleUpload, app.authMiddleware, app.uploadRateLimitMiddleware(), app.csrfMiddleware())
 	e.GET("/files/:id", app.handleDownload)
+	e.POST("/files/:id/public", app.handleMakePublic, app.authMiddleware, app.csrfMiddleware())
 	e.DELETE("/files/:id", app.handleDelete, app.authMiddleware, app.csrfMiddleware())
 	e.GET("/api/files", app.handleListFiles, app.authMiddleware)
 	e.GET("/api/stats", app.handleStats, app.authMiddleware)
@@ -862,6 +864,7 @@ func (app *App) handleUpload(c echo.Context) error {
 		MimeType:        detectedMime,
 		PersonalTokenID: personalTokenID,
 		CreatedAt:       time.Now(),
+		Public:          true,
 	}
 
 	dbSaveChan := make(chan error, 1)
@@ -929,7 +932,7 @@ func (app *App) handleDownload(c echo.Context) error {
 		if !app.validateFileJWT(jwtToken, fileID) {
 			return c.JSON(403, map[string]string{"error": "Invalid file token"})
 		}
-	} else {
+	} else if !file.Public {
 		regularToken := c.QueryParam("token")
 		if regularToken == "" || regularToken != file.Token {
 			return c.JSON(403, map[string]string{"error": "File token required"})
@@ -972,6 +975,30 @@ func (app *App) handleDelete(c echo.Context) error {
 	}()
 
 	return c.JSON(200, map[string]string{"message": "File deleted"})
+}
+
+func (app *App) handleMakePublic(c echo.Context) error {
+	fileID := c.Param("id")
+	if len(fileID) > 100 {
+		return c.JSON(400, map[string]string{"error": "Invalid file ID"})
+	}
+
+	var file File
+	if err := app.DB.Where("id = ?", fileID).First(&file).Error; err != nil {
+		return c.JSON(404, map[string]string{"error": "File not found"})
+	}
+
+	if file.Public {
+		return c.JSON(200, map[string]string{"message": "Already public"})
+	}
+
+	if err := app.DB.Model(&file).Update("public", true).Error; err != nil {
+		return c.JSON(500, map[string]string{"error": "Failed to update file"})
+	}
+
+	app.setCachedFile(file)
+
+	return c.JSON(200, map[string]string{"message": "File is now public"})
 }
 
 func (app *App) handleCreateToken(c echo.Context) error {
