@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -131,6 +132,27 @@ func (ctl *Ctl) Run() {
 		ctl.pasteDelete(os.Args[3])
 	case "paste-clean-expired":
 		ctl.pasteCleanExpired()
+	case "cache-clear":
+		ctl.cacheClear()
+	case "cache-info":
+		ctl.cacheInfo()
+	case "cache-files":
+		ctl.cacheFiles()
+	case "cache-stats":
+		ctl.cacheStats()
+	case "orphaned-files":
+		ctl.findOrphanedFiles()
+	case "cleanup-old":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: mkboxctl cleanup-old <days>")
+			return
+		}
+		days, err := strconv.Atoi(os.Args[3])
+		if err != nil {
+			fmt.Printf("Invalid days: %v\n", err)
+			return
+		}
+		ctl.cleanupOldFiles(days)
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		ctl.showHelp()
@@ -160,14 +182,22 @@ func (ctl *Ctl) showHelp() {
 	fmt.Println("  paste-info <id>         - информация о пасте")
 	fmt.Println("  paste-delete <id>       - удалить пасту")
 	fmt.Println("  paste-clean-expired     - удалить истёкшие пасты")
+	fmt.Println("")
+	fmt.Println("Кеш и очистка:")
+	fmt.Println("  cache-clear             - форсированная очистка кеша")
+	fmt.Println("  cache-info              - информация о кеше")
+	fmt.Println("  cache-files             - список кешированных файлов")
+	fmt.Println("  cache-stats             - статистика кеша")
+	fmt.Println("  orphaned-files          - найти файлы без записей в БД")
+	fmt.Println("  cleanup-old <days>      - удалить файлы старше N дней")
 }
 
 func (ctl *Ctl) init() {
 	fmt.Println("Инициализация mkbox...")
 
-	os.MkdirAll(ctl.DataDir, 0755)
-	os.MkdirAll(filepath.Join(ctl.DataDir, "files"), 0755)
-	os.MkdirAll(filepath.Dir(ctl.SocketPath), 0755)
+	os.MkdirAll(ctl.DataDir, 0750)
+	os.MkdirAll(filepath.Join(ctl.DataDir, "files"), 0750)
+	os.MkdirAll(filepath.Dir(ctl.SocketPath), 0750)
 
 	configPath := filepath.Join(ctl.DataDir, "config")
 	if _, err := os.Stat(configPath); err == nil {
@@ -692,11 +722,13 @@ func (ctl *Ctl) showStats() {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	fmt.Println("Память:")
-	fmt.Printf("  Выделено: %s\n", formatSize(int64(m.Alloc)))
-	fmt.Printf("  Всего выделено: %s\n", formatSize(int64(m.TotalAlloc)))
-	fmt.Printf("  Системная память: %s\n", formatSize(int64(m.Sys)))
+	fmt.Printf("  Выделено: %s\n", formatSize(safeUint64ToInt64(m.Alloc)))
+	fmt.Printf("  Всего выделено: %s\n", formatSize(safeUint64ToInt64(m.TotalAlloc)))
+	fmt.Printf("  Системная память: %s\n", formatSize(safeUint64ToInt64(m.Sys)))
 	fmt.Printf("  Количество сборок мусора: %d\n", m.NumGC)
-	fmt.Printf("  Время последней сборки мусора: %s\n", time.Unix(0, int64(m.LastGC)).Format("2006-01-02 15:04:05"))
+	if m.LastGC > 0 {
+		fmt.Printf("  Время последней сборки мусора: %s\n", time.Unix(0, safeUint64ToInt64(m.LastGC)).Format("2006-01-02 15:04:05"))
+	}
 	fmt.Println()
 	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
 	if _, err := os.Stat(dbPath); err != nil {
@@ -826,7 +858,7 @@ func (ctl *Ctl) showStats() {
 func (ctl *Ctl) openDB() (*sql.DB, error) {
 	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
 	if _, err := os.Stat(dbPath); err != nil {
-		return nil, fmt.Errorf("База данных не найдена. Запустите 'mkboxctl init'")
+		return nil, fmt.Errorf("база данных не найдена. Запустите 'mkboxctl init'") // i hate linter
 	}
 	return sql.Open("sqlite3", dbPath)
 }
@@ -957,6 +989,13 @@ func (ctl *Ctl) pasteCleanExpired() {
 	fmt.Printf("Удалено истёкших паст: %d\n", n)
 }
 
+func safeUint64ToInt64(u uint64) int64 {
+	if u > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(u)
+}
+
 func preview(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	lines := strings.Split(s, "\n")
@@ -968,4 +1007,307 @@ func preview(s string) string {
 		p = p[:256] + "..."
 	}
 	return p
+}
+
+func (ctl *Ctl) cacheClear() {
+	fmt.Println("Форсированная очистка кеша...")
+
+	cacheFiles := []string{
+		filepath.Join(ctl.DataDir, "cache"),
+		filepath.Join(ctl.DataDir, "temp"),
+		filepath.Join(ctl.DataDir, "tmp"),
+	}
+
+	totalCleared := 0
+	for _, cacheDir := range cacheFiles {
+		if _, err := os.Stat(cacheDir); err == nil {
+			entries, err := os.ReadDir(cacheDir)
+			if err != nil {
+				continue
+			}
+
+			for _, entry := range entries {
+				entryPath := filepath.Join(cacheDir, entry.Name())
+				if err := os.RemoveAll(entryPath); err == nil {
+					totalCleared++
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Очищено файлов кеша: %d\n", totalCleared)
+	fmt.Println("Кеш очищен")
+}
+
+func (ctl *Ctl) cacheInfo() {
+	fmt.Println("Информация о кеше:")
+	fmt.Println()
+
+	cacheFiles := []string{
+		filepath.Join(ctl.DataDir, "cache"),
+		filepath.Join(ctl.DataDir, "temp"),
+		filepath.Join(ctl.DataDir, "tmp"),
+		filepath.Join(ctl.DataDir, "files"),
+	}
+
+	for _, cacheDir := range cacheFiles {
+		if stat, err := os.Stat(cacheDir); err == nil {
+			var totalSize int64
+			var fileCount int
+
+			filepath.Walk(cacheDir, func(path string, info os.FileInfo, err error) error {
+				if err == nil && !info.IsDir() {
+					totalSize += info.Size()
+					fileCount++
+				}
+				return nil
+			})
+
+			fmt.Printf("  %s:\n", filepath.Base(cacheDir))
+			fmt.Printf("    Файлов: %d\n", fileCount)
+			fmt.Printf("    Размер: %s\n", formatSize(totalSize))
+			fmt.Printf("    Последнее изменение: %s\n", stat.ModTime().Format("2006-01-02 15:04:05"))
+			fmt.Println()
+		} else {
+			fmt.Printf("  %s: не найден\n", filepath.Base(cacheDir))
+		}
+	}
+}
+
+func (ctl *Ctl) cacheFiles() {
+	fmt.Println("Кешированные файлы:")
+	fmt.Printf("%-36s %-20s %-10s %-20s\n", "ID", "Имя файла", "Размер", "Кеширован")
+	fmt.Println(strings.Repeat("-", 90))
+
+	filesDir := filepath.Join(ctl.DataDir, "files")
+	entries, err := os.ReadDir(filesDir)
+	if err != nil {
+		fmt.Printf("Ошибка чтения директории файлов: %v\n", err)
+		return
+	}
+
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Printf("Ошибка подключения к базе данных: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	fileCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			fileID := entry.Name()
+			info, _ := entry.Info()
+
+			var filename string
+			err := db.QueryRow("SELECT filename FROM files WHERE id = ?", fileID).Scan(&filename)
+			if err != nil {
+				filename = "неизвестно"
+			}
+
+			if len(filename) > 20 {
+				filename = filename[:17] + "..."
+			}
+
+			sizeStr := formatSize(info.Size())
+			modTime := info.ModTime().Format("2006-01-02 15:04:05")
+
+			fmt.Printf("%-36s %-20s %-10s %-20s\n", fileID, filename, sizeStr, modTime)
+			fileCount++
+		}
+	}
+
+	if fileCount == 0 {
+		fmt.Println("Кешированные файлы не найдены")
+	} else {
+		fmt.Printf("\nВсего кешированных файлов: %d\n", fileCount)
+	}
+}
+
+func (ctl *Ctl) cacheStats() {
+	fmt.Println("Статистика кеша:")
+	fmt.Println()
+
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Println("База данных не найдена")
+		return
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Printf("Ошибка подключения к базе данных: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	var dbFileCount int64
+	var dbTotalSize int64
+	db.QueryRow("SELECT COUNT(*) FROM files").Scan(&dbFileCount)
+	db.QueryRow("SELECT COALESCE(SUM(size), 0) FROM files").Scan(&dbTotalSize)
+
+	filesDir := filepath.Join(ctl.DataDir, "files")
+	var diskFileCount int64
+	var diskTotalSize int64
+
+	filepath.Walk(filesDir, func(path string, info os.FileInfo, err error) error {
+		if err == nil && !info.IsDir() {
+			diskFileCount++
+			diskTotalSize += info.Size()
+		}
+		return nil
+	})
+
+	fmt.Printf("База данных:\n")
+	fmt.Printf("  Записей файлов: %d\n", dbFileCount)
+	fmt.Printf("  Общий размер (БД): %s\n", formatSize(dbTotalSize))
+	fmt.Println()
+
+	fmt.Printf("Диск:\n")
+	fmt.Printf("  Файлов на диске: %d\n", diskFileCount)
+	fmt.Printf("  Общий размер (диск): %s\n", formatSize(diskTotalSize))
+	fmt.Println()
+
+	if dbFileCount != diskFileCount {
+		fmt.Printf("ВНИМАНИЕ: Несоответствие количества файлов (БД: %d, диск: %d)\n", dbFileCount, diskFileCount)
+	}
+
+	if dbTotalSize != diskTotalSize {
+		fmt.Printf("ВНИМАНИЕ: Несоответствие размеров (БД: %s, диск: %s)\n", formatSize(dbTotalSize), formatSize(diskTotalSize))
+	}
+
+	efficiency := float64(diskFileCount) / float64(dbFileCount) * 100
+	if dbFileCount > 0 {
+		fmt.Printf("Эффективность кеша: %.1f%%\n", efficiency)
+	}
+}
+
+func (ctl *Ctl) findOrphanedFiles() {
+	fmt.Println("Поиск файлов без записей в БД...")
+
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Println("База данных не найдена")
+		return
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Printf("Ошибка подключения к базе данных: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	filesDir := filepath.Join(ctl.DataDir, "files")
+	entries, err := os.ReadDir(filesDir)
+	if err != nil {
+		fmt.Printf("Ошибка чтения директории файлов: %v\n", err)
+		return
+	}
+
+	fmt.Printf("%-36s %-10s %-20s\n", "ID файла", "Размер", "Создан")
+	fmt.Println(strings.Repeat("-", 70))
+
+	orphanedCount := 0
+	var orphanedSize int64
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			fileID := entry.Name()
+			info, _ := entry.Info()
+
+			var count int
+			err := db.QueryRow("SELECT COUNT(*) FROM files WHERE id = ?", fileID).Scan(&count)
+			if err != nil || count == 0 {
+				sizeStr := formatSize(info.Size())
+				modTime := info.ModTime().Format("2006-01-02 15:04:05")
+
+				fmt.Printf("%-36s %-10s %-20s\n", fileID, sizeStr, modTime)
+				orphanedCount++
+				orphanedSize += info.Size()
+			}
+		}
+	}
+
+	if orphanedCount == 0 {
+		fmt.Println("Файлы-сироты не найдены")
+	} else {
+		fmt.Printf("\nВсего файлов-сирот: %d\n", orphanedCount)
+		fmt.Printf("Общий размер: %s\n", formatSize(orphanedSize))
+		fmt.Println("Для удаления используйте: find", filesDir, "-type f -exec rm {} \\;")
+	}
+}
+
+func (ctl *Ctl) cleanupOldFiles(days int) {
+	fmt.Printf("Удаление файлов старше %d дней...\n", days)
+
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		fmt.Println("База данных не найдена")
+		return
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		fmt.Printf("Ошибка подключения к базе данных: %v\n", err)
+		return
+	}
+	defer db.Close()
+
+	cutoffDate := time.Now().AddDate(0, 0, -days)
+
+	rows, err := db.Query("SELECT id, filename, size FROM files WHERE created_at < ?", cutoffDate)
+	if err != nil {
+		fmt.Printf("Ошибка получения старых файлов: %v\n", err)
+		return
+	}
+	defer rows.Close()
+
+	var filesToDelete []struct {
+		ID       string
+		Filename string
+		Size     int64
+	}
+
+	for rows.Next() {
+		var file struct {
+			ID       string
+			Filename string
+			Size     int64
+		}
+		if err := rows.Scan(&file.ID, &file.Filename, &file.Size); err == nil {
+			filesToDelete = append(filesToDelete, file)
+		}
+	}
+
+	if len(filesToDelete) == 0 {
+		fmt.Printf("Файлы старше %d дней не найдены\n", days)
+		return
+	}
+
+	deletedCount := 0
+	var deletedSize int64
+
+	for _, file := range filesToDelete {
+		filePath := filepath.Join(ctl.DataDir, "files", file.ID)
+
+		if err := os.Remove(filePath); err != nil {
+			fmt.Printf("Ошибка удаления файла %s: %v\n", file.ID, err)
+			continue
+		}
+
+		if _, err := db.Exec("DELETE FROM files WHERE id = ?", file.ID); err != nil {
+			fmt.Printf("Ошибка удаления записи %s из БД: %v\n", file.ID, err)
+			continue
+		}
+
+		deletedCount++
+		deletedSize += file.Size
+
+		fmt.Printf("Удален: %s (%s) - %s\n", file.ID, file.Filename, formatSize(file.Size))
+	}
+
+	fmt.Printf("\nУдалено файлов: %d\n", deletedCount)
+	fmt.Printf("Освобождено места: %s\n", formatSize(deletedSize))
 }

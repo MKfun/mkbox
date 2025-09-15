@@ -44,7 +44,7 @@ type App struct {
 	RateLimiter   *rate.Limiter
 	AuthLimiter   *rate.Limiter
 	UploadLimiter *rate.Limiter
-	CSRFTokens    map[string]time.Time
+	CSRFTokens    map[string]CSRFEntry
 	CSRFMutex     sync.RWMutex
 	FileCache     map[string]File
 	CacheMutex    sync.RWMutex
@@ -108,6 +108,11 @@ type FileTokenClaims struct {
 	FileID string `json:"file_id"`
 	Type   string `json:"type"` // "file_access"
 	jwt.RegisteredClaims
+}
+
+type CSRFEntry struct {
+	IP        string
+	ExpiresAt time.Time
 }
 
 func generateSecureToken(length int) string {
@@ -192,8 +197,8 @@ func NewApp() *App {
 		MaxStorageSize: 20 * 1024 * 1024 * 1024,  // 20GB
 	}
 
-	os.MkdirAll(config.DataDir, 0755)
-	os.MkdirAll(filepath.Dir(config.SocketPath), 0755)
+	os.MkdirAll(config.DataDir, 0750)
+	os.MkdirAll(filepath.Dir(config.SocketPath), 0750)
 
 	db, err := gorm.Open(sqlite.Open(filepath.Join(config.DataDir, "db.sqlite")), &gorm.Config{})
 	if err != nil {
@@ -208,7 +213,7 @@ func NewApp() *App {
 		RateLimiter:   rate.NewLimiter(rate.Limit(10), 20),
 		AuthLimiter:   rate.NewLimiter(rate.Limit(5), 10),
 		UploadLimiter: rate.NewLimiter(rate.Limit(3), 5), // 3 загрузки в секунду, burst 5
-		CSRFTokens:    make(map[string]time.Time),
+		CSRFTokens:    make(map[string]CSRFEntry),
 		FileCache:     make(map[string]File),
 		StatsCache:    make(map[string]interface{}),
 		CleanupTicker: time.NewTicker(5 * time.Minute),
@@ -273,10 +278,14 @@ func (app *App) cleanupCSRFTokens() {
 	for range app.CleanupTicker.C {
 		now := time.Now()
 		app.CSRFMutex.Lock()
-		for token, expiry := range app.CSRFTokens {
-			if now.After(expiry) {
-				delete(app.CSRFTokens, token)
+		expiredTokens := make([]string, 0)
+		for token, entry := range app.CSRFTokens {
+			if now.After(entry.ExpiresAt) {
+				expiredTokens = append(expiredTokens, token)
 			}
+		}
+		for _, token := range expiredTokens {
+			delete(app.CSRFTokens, token)
 		}
 		app.CSRFMutex.Unlock()
 	}
@@ -286,10 +295,14 @@ func (app *App) cleanupCache() {
 	for range app.CleanupTicker.C {
 		app.CacheMutex.Lock()
 		cutoff := time.Now().Add(-1 * time.Hour)
+		expiredFiles := make([]string, 0)
 		for id, file := range app.FileCache {
 			if file.CreatedAt.Before(cutoff) {
-				delete(app.FileCache, id)
+				expiredFiles = append(expiredFiles, id)
 			}
+		}
+		for _, id := range expiredFiles {
+			delete(app.FileCache, id)
 		}
 		app.CacheMutex.Unlock()
 	}
@@ -347,6 +360,9 @@ func (app *App) getCachedStats() (map[string]interface{}, bool) {
 
 func (app *App) validateFileJWT(tokenString, fileID string) bool {
 	token, err := jwt.ParseWithClaims(tokenString, &FileTokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(app.Config.JWTSecret), nil
 	})
 
@@ -407,7 +423,13 @@ func (app *App) Run() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(app.rateLimitMiddleware())
-	e.Use(middleware.Secure())
+	e.Use(middleware.SecureWithConfig(middleware.SecureConfig{
+		XSSProtection:         "1; mode=block",
+		ContentTypeNosniff:    "nosniff",
+		XFrameOptions:         "DENY",
+		ReferrerPolicy:        "strict-origin-when-cross-origin",
+		ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none';",
+	}))
 
 	e.Static("/files", filepath.Join(app.Config.DataDir, "files"))
 
@@ -449,7 +471,14 @@ func (app *App) Run() {
 		log.Fatal(err)
 	}
 
-	log.Fatal(http.Serve(listener, e))
+	server := &http.Server{
+		Handler:      e,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	log.Fatal(server.Serve(listener))
 }
 
 func (app *App) handleIndex(c echo.Context) error {
@@ -462,8 +491,12 @@ func (app *App) handleIndex(c echo.Context) error {
 
 func (app *App) handleCSRFToken(c echo.Context) error {
 	token := generateSecureToken(32)
+	clientIP := c.RealIP()
 	app.CSRFMutex.Lock()
-	app.CSRFTokens[token] = time.Now().Add(1 * time.Hour)
+	app.CSRFTokens[token] = CSRFEntry{
+		IP:        clientIP,
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
 	app.CSRFMutex.Unlock()
 	return c.JSON(200, map[string]string{"token": token})
 }
@@ -515,6 +548,9 @@ func (app *App) handleListFiles(c echo.Context) error {
 
 	tokenString := strings.TrimPrefix(auth, "Bearer ")
 	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(app.Config.JWTSecret), nil
 	})
 
@@ -555,6 +591,9 @@ func (app *App) handleStats(c echo.Context) error {
 
 	tokenString := strings.TrimPrefix(auth, "Bearer ")
 	token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
 		return []byte(app.Config.JWTSecret), nil
 	})
 
@@ -1033,9 +1072,13 @@ func (app *App) csrfMiddleware() echo.MiddlewareFunc {
 					return c.JSON(403, map[string]string{"error": "CSRF token required"})
 				}
 
+				clientIP := c.RealIP()
 				app.CSRFMutex.Lock()
-				_, exists := app.CSRFTokens[csrfToken]
+				entry, exists := app.CSRFTokens[csrfToken]
 				if exists {
+					if entry.IP != clientIP || time.Now().After(entry.ExpiresAt) {
+						exists = false
+					}
 					delete(app.CSRFTokens, csrfToken)
 				}
 				app.CSRFMutex.Unlock()
@@ -1058,6 +1101,9 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 		tokenString := strings.TrimPrefix(auth, "Bearer ")
 		token, err := jwt.ParseWithClaims(tokenString, &TokenClaims{}, func(token *jwt.Token) (interface{}, error) {
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+			}
 			return []byte(app.Config.JWTSecret), nil
 		})
 
