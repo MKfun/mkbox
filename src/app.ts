@@ -39,42 +39,44 @@ export class App {
   }
 
   private setupEventListeners() {
-    const loginButton = document.getElementById('login-btn') as HTMLButtonElement;
-    if (loginButton) {
-      loginButton.onclick = null;
-      
-      loginButton.addEventListener('click', (e) => {
+    const addActivateListener = (el: HTMLElement | null, handler: () => void) => {
+      if (!el) return;
+      let activated = false;
+      let lastTime = 0;
+      const oncePerGesture = (e: Event) => {
+        const now = Date.now();
+        if (activated && now - lastTime < 400) return;
+        activated = true;
+        lastTime = now;
+        handler();
+        setTimeout(() => { activated = false; }, 400);
+      };
+
+      el.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log('Login button clicked');
-        this.login();
+        oncePerGesture(e);
       });
-      
-      loginButton.addEventListener('pointerup', (e) => {
+      el.addEventListener('pointerup', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log('Login button pointer up');
-        this.login();
+        oncePerGesture(e);
       }, { passive: false } as any);
-    }
+      el.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        oncePerGesture(e);
+      }, { passive: false } as any);
+    };
+
+    const loginButton = document.getElementById('login-btn') as HTMLButtonElement;
+    addActivateListener(loginButton, () => this.login());
 
     const logoutButton = document.getElementById('logout-btn') as HTMLButtonElement;
-    if (logoutButton) {
-      logoutButton.addEventListener('click', () => this.logout());
-      logoutButton.addEventListener('pointerup', (e) => {
-        e.preventDefault();
-        this.logout();
-      }, { passive: false } as any);
-    }
+    addActivateListener(logoutButton, () => this.logout());
 
     const createTokenButton = document.getElementById('create-token-btn') as HTMLButtonElement;
-    if (createTokenButton) {
-      createTokenButton.addEventListener('click', () => this.createPersonalToken());
-      createTokenButton.addEventListener('pointerup', (e) => {
-        e.preventDefault();
-        this.createPersonalToken();
-      }, { passive: false } as any);
-    }
+    addActivateListener(createTokenButton, () => this.createPersonalToken());
 
     this.ui.setupUploadArea((file) => this.fileManager.uploadFile(file));
 
