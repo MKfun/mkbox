@@ -107,27 +107,7 @@ export class UIManager {
       }
     });
 
-    const fileInput = document.getElementById('file-input') as HTMLInputElement;
-    const uploadForm = document.getElementById('upload-form') as HTMLFormElement;
-
-    uploadForm.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (fileInput.files?.[0]) {
-        onFileSelect(fileInput.files[0]);
-      }
-    });
-
-    fileInput.addEventListener('change', (e) => {
-      const target = e.target as HTMLInputElement;
-      if (target.files?.[0]) {
-        onFileSelect(target.files[0]);
-      }
-    });
-
-    const selectButton = this.uploadArea.querySelector('button');
-    selectButton?.addEventListener('click', () => {
-      fileInput.click();
-    });
+    
   }
 
   formatSize(bytes: number): string {

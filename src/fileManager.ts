@@ -101,8 +101,6 @@ export class FileManager {
       this.ui.hideUploadProgress();
       this.ui.showSuccess('файл загружен');
       
-      const fileInput = document.getElementById('file-input') as HTMLInputElement;
-      fileInput.value = '';
       
       await this.loadFiles();
       await this.loadStats();
