@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>mkbox</title>
+    <link rel="icon" href="/mkbox.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/mkbox.ico">
+    <link rel="apple-touch-icon" href="/mkbox.ico">
     <link rel="stylesheet" href="style.css">
     <script type="importmap">
     {
@@ -20,7 +23,7 @@
             <a href="/" class="logo">mkbox</a>
             <div id="auth-section" class="auth-section">
                 <input type="password" id="key-input" placeholder="Введите ключ" class="long">
-                <button id="login-btn">войти</button>
+                <button id="login-btn" type="button">войти</button>
             </div>
         </div>
         <div id="version-display" class="version-display" style="display: none;">
@@ -52,8 +55,8 @@
 
             <h2>Мои файлы <span class="status-indicator online"></span></h2>
             <div class="file-actions">
-                <button id="create-token-btn" class="secondary">создать персональный токен</button>
-                <button id="logout-btn" class="danger">выйти</button>
+                <button id="create-token-btn" class="secondary" type="button">создать персональный токен</button>
+                <button id="logout-btn" class="danger" type="button">выйти</button>
             </div>
             <div id="files-list"></div>
         </div>

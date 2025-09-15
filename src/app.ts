@@ -50,35 +50,30 @@ export class App {
         this.login();
       });
       
-      loginButton.addEventListener('touchend', (e) => {
+      loginButton.addEventListener('pointerup', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log('Login button touched');
+        console.log('Login button pointer up');
         this.login();
-      });
-      
-      loginButton.addEventListener('touchstart', (e) => {
-        e.preventDefault();
-        console.log('Login button touch start');
-      });
+      }, { passive: false } as any);
     }
 
     const logoutButton = document.getElementById('logout-btn') as HTMLButtonElement;
     if (logoutButton) {
       logoutButton.addEventListener('click', () => this.logout());
-      logoutButton.addEventListener('touchend', (e) => {
+      logoutButton.addEventListener('pointerup', (e) => {
         e.preventDefault();
         this.logout();
-      });
+      }, { passive: false } as any);
     }
 
     const createTokenButton = document.getElementById('create-token-btn') as HTMLButtonElement;
     if (createTokenButton) {
       createTokenButton.addEventListener('click', () => this.createPersonalToken());
-      createTokenButton.addEventListener('touchend', (e) => {
+      createTokenButton.addEventListener('pointerup', (e) => {
         e.preventDefault();
         this.createPersonalToken();
-      });
+      }, { passive: false } as any);
     }
 
     this.ui.setupUploadArea((file) => this.fileManager.uploadFile(file));

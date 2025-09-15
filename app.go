@@ -26,7 +26,7 @@ import (
 	"gorm.io/gorm"
 )
 
-//go:embed public/*
+//go:embed public/* mkbox.ico
 var publicFiles embed.FS
 
 // emebed fs my beloved
@@ -406,6 +406,7 @@ func (app *App) Run() {
 	e.GET("/app.js", app.handleStatic("public/app.js"))
 	e.GET("/end-portal-*.png", app.handlePNG)
 	e.GET("/", app.handleIndex)
+	e.GET("/mkbox.ico", app.handleFavicon)
 	e.GET("/csrf-token", app.handleCSRFToken)
 	e.POST("/auth", app.handleAuth, app.authRateLimitMiddleware(), app.csrfMiddleware())
 	e.POST("/create-token", app.handleCreateToken, app.authRateLimitMiddleware(), app.csrfMiddleware())
@@ -482,6 +483,14 @@ func (app *App) handlePNG(c echo.Context) error {
 		return c.String(404, "Not Found")
 	}
 	return c.Blob(200, "image/png", data)
+}
+
+func (app *App) handleFavicon(c echo.Context) error {
+	data, err := publicFiles.ReadFile("mkbox.ico")
+	if err != nil {
+		return c.String(404, "Not Found")
+	}
+	return c.Blob(200, "image/x-icon", data)
 }
 
 func (app *App) handleListFiles(c echo.Context) error {
