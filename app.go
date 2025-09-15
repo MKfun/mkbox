@@ -1131,7 +1131,7 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func (app *App) handleInfo(c echo.Context) error {
 	return c.JSON(200, map[string]string{
-		"version": "mkbox-a1.1",
+		"version": "pub1.0",
 	})
 }
 
