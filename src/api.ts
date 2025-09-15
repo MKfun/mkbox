@@ -16,6 +16,12 @@ export interface AuthResponse {
   token: string;
 }
 
+export interface CreatePasteResponse {
+  id: string;
+  url: string;
+  raw_url: string;
+}
+
 export interface CsrfResponse {
   token: string;
 }
@@ -192,5 +198,22 @@ export class ApiClient {
       throw new Error('Failed to get info');
     }
     return response.json();
+  }
+
+  async createPaste(params: { content: string; syntax?: string; ttl_sec?: number; once?: boolean }): Promise<CreatePasteResponse> {
+    const csrfToken = await this.getCsrfToken();
+    const response = await fetch('/api/paste', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken
+      },
+      body: JSON.stringify(params)
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'ошибка создания пасты');
+    }
+    return data;
   }
 }

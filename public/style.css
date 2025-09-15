@@ -145,6 +145,9 @@ input[type="password"]::placeholder {
   .upload-area {
     padding: 1.2em;
   }
+  .tabs {
+    flex-wrap: wrap;
+  }
 }
 
 /* Специальные стили для iOS */
@@ -192,6 +195,32 @@ input[type="file"]::file-selector-button {
 
 input[type="file"]::file-selector-button {
   margin-right: 0.5em;
+}
+
+textarea,
+select {
+  background: #000;
+  color: #fff;
+  border: var(--input-border-width) solid var(--accent);
+  font-family: var(--font-family);
+}
+
+textarea::placeholder {
+  color: #fff;
+  opacity: 0.75;
+}
+
+textarea {
+  padding: 0.5em;
+  resize: vertical;
+}
+
+textarea:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent-light);
 }
 
 button:hover:not(:disabled),
@@ -291,6 +320,21 @@ input[type="file"] {
   margin: auto;
   position: relative;
   z-index: 1;
+}
+
+.tabs {
+  display: flex;
+  gap: 0.5em;
+  margin: 0.5em 0 1em;
+}
+.tab-btn {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent-lighter);
+}
+.tab-btn.active {
+  background: var(--accent);
+  color: white;
 }
 
 .file-item {

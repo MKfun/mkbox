@@ -89,6 +89,16 @@ type Lockdown struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Paste struct {
+	ID        string     `gorm:"primaryKey" json:"id"`
+	Content   string     `json:"content"`
+	Syntax    string     `json:"syntax"`
+	Once      bool       `json:"once"`
+	Views     int        `json:"views"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
 type TokenClaims struct {
 	FileID string `json:"file_id"`
 	jwt.RegisteredClaims
@@ -190,7 +200,7 @@ func NewApp() *App {
 		log.Fatal(err)
 	}
 
-	db.AutoMigrate(&File{}, &PersonalToken{}, &Lockdown{})
+	db.AutoMigrate(&File{}, &PersonalToken{}, &Lockdown{}, &Paste{})
 
 	app := &App{
 		DB:            db,
@@ -416,6 +426,9 @@ func (app *App) Run() {
 	e.GET("/api/files", app.handleListFiles, app.authMiddleware)
 	e.GET("/api/stats", app.handleStats, app.authMiddleware)
 	e.GET("/api/info", app.handleInfo)
+	e.POST("/api/paste", app.handleCreatePaste, app.csrfMiddleware())
+	e.GET("/p/:id", app.handlePasteView)
+	e.GET("/p/:id/raw", app.handlePasteRaw)
 
 	var listener net.Listener
 	var err error
@@ -1074,4 +1087,116 @@ func (app *App) handleInfo(c echo.Context) error {
 	return c.JSON(200, map[string]string{
 		"version": "mkbox-a1.1",
 	})
+}
+
+const base62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func generateBase62(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		r := make([]byte, 1)
+		_, err := rand.Read(r)
+		if err != nil {
+			b[i] = base62[int(time.Now().UnixNano())%len(base62)]
+		} else {
+			b[i] = base62[int(r[0])%len(base62)]
+		}
+	}
+	return string(b)
+}
+
+func (app *App) handleCreatePaste(c echo.Context) error {
+	var req struct {
+		Content string `json:"content"`
+		Syntax  string `json:"syntax"`
+		TTL     int    `json:"ttl_sec"`
+		Once    bool   `json:"once"`
+	}
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(400, map[string]string{"error": "Invalid request"})
+	}
+	if len(req.Content) == 0 {
+		return c.JSON(400, map[string]string{"error": "Empty content"})
+	}
+	if len(req.Content) > 1_000_000 {
+		return c.JSON(413, map[string]string{"error": "Content too large"})
+	}
+	id := generateBase62(8)
+	var expires *time.Time
+	if req.TTL > 0 {
+		t := time.Now().Add(time.Duration(req.TTL) * time.Second)
+		expires = &t
+	}
+	p := Paste{
+		ID:        id,
+		Content:   req.Content,
+		Syntax:    req.Syntax,
+		Once:      req.Once,
+		Views:     0,
+		CreatedAt: time.Now(),
+		ExpiresAt: expires,
+	}
+	if err := app.DB.Create(&p).Error; err != nil {
+		return c.JSON(500, map[string]string{"error": "Failed to save paste"})
+	}
+	return c.JSON(200, map[string]string{
+		"id":      id,
+		"url":     "/p/" + id,
+		"raw_url": "/p/" + id + "/raw",
+	})
+}
+
+func (app *App) handlePasteRaw(c echo.Context) error {
+	id := c.Param("id")
+	var p Paste
+	if err := app.DB.Where("id = ?", id).First(&p).Error; err != nil {
+		return c.String(404, "Not Found")
+	}
+	if p.ExpiresAt != nil && time.Now().After(*p.ExpiresAt) {
+		app.DB.Delete(&p)
+		return c.String(404, "Not Found")
+	}
+	if p.Once {
+		app.DB.Delete(&p)
+	} else {
+		app.DB.Model(&p).UpdateColumn("views", gorm.Expr("views + 1"))
+	}
+	return c.Blob(200, "text/plain; charset=utf-8", []byte(p.Content))
+}
+
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+	return r.Replace(s)
+}
+
+// КОСТЫЫЫЛЬ
+func (app *App) handlePasteView(c echo.Context) error {
+	id := c.Param("id")
+	var p Paste
+	if err := app.DB.Where("id = ?", id).First(&p).Error; err != nil {
+		return c.String(404, "Not Found")
+	}
+	if p.ExpiresAt != nil && time.Now().After(*p.ExpiresAt) {
+		app.DB.Delete(&p)
+		return c.String(404, "Not Found")
+	}
+	esc := htmlEscape(p.Content)
+	if p.Once {
+		app.DB.Delete(&p)
+	} else {
+		app.DB.Model(&p).UpdateColumn("views", gorm.Expr("views + 1"))
+	}
+	html := "<!DOCTYPE html><html lang=\"ru\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, viewport-fit=cover\"><base href=\"/\"><title>paste " + id + "</title>" +
+		"<link rel=\"stylesheet\" href=\"/style.css\">" +
+		"<script type=\"importmap\">{\n  \"imports\": {\n    \"three\": \"https://unpkg.com/three@0.160.0/build/three.module.js\"\n  }\n}</script>" +
+		"<style>pre{white-space:pre-wrap;word-wrap:break-word;border:1px solid var(--accent);padding:1em;background:rgba(0,0,0,0.3);backdrop-filter:blur(10px);overflow:auto}</style>" +
+		"</head><body>" +
+		"<div id=\"background\"></div><div id=\"content\">" +
+		"<div class=\"header-nav\"><a class=\"logo\" href=\"/\">mkbox</a></div>" +
+		"<div class=\"status-section\"><a href=\"/p/" + id + "/raw\">raw</a></div>" +
+		"<pre>" + esc + "</pre>" +
+		"</div>" +
+		"<script type=\"module\">import background from '/background.js';background(document.getElementById('background'));</script>" +
+		"</body></html>"
+	return c.HTML(200, html)
 }

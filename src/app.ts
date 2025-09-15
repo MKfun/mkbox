@@ -81,6 +81,45 @@ export class App {
     this.ui.setupUploadArea((file) => this.fileManager.uploadFile(file));
 
     (window as any).fileManager = this.fileManager;
+
+    const tabs = Array.from(document.querySelectorAll('.tab-btn')) as HTMLButtonElement[];
+    const panels = Array.from(document.querySelectorAll('[data-tab-panel]')) as HTMLElement[];
+    const switchTab = (name: string) => {
+      tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+      panels.forEach(p => p.style.display = p.getAttribute('data-tab-panel') === name ? '' : 'none');
+    };
+    tabs.forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab || 'upload')));
+
+    const pasteForm = document.getElementById('paste-form') as HTMLFormElement | null;
+    const pasteContent = document.getElementById('paste-content') as HTMLTextAreaElement | null;
+    const pasteSyntax = document.getElementById('paste-syntax') as HTMLSelectElement | null;
+    const pasteTTL = document.getElementById('paste-ttl') as HTMLSelectElement | null;
+    const pasteOnce = document.getElementById('paste-once') as HTMLInputElement | null;
+    const pasteResult = document.getElementById('paste-result') as HTMLDivElement | null;
+    if (pasteForm && pasteContent && pasteSyntax && pasteTTL && pasteOnce && pasteResult) {
+      pasteForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const content = pasteContent.value;
+        if (!content) {
+          this.ui.showError('пустая паста');
+          return;
+        }
+        try {
+          const res = await this.api.createPaste({
+            content,
+            syntax: pasteSyntax.value || undefined,
+            ttl_sec: parseInt(pasteTTL.value, 10) || 0,
+            once: pasteOnce.checked,
+          });
+          pasteResult.style.display = 'block';
+          pasteResult.innerHTML = `<div>paste: <a href="${res.url}">${res.url}</a> | <a href="${res.raw_url}">raw</a></div>`;
+          await navigator.clipboard.writeText(location.origin + res.raw_url);
+          this.ui.showSuccess('ссылки скопированы');
+        } catch (err) {
+          this.ui.showError(err instanceof Error ? err.message : 'ошибка создания пасты');
+        }
+      });
+    }
   }
 
   private async login() {

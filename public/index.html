@@ -32,12 +32,16 @@
 
         <div id="main-section" style="display: none;">
             <h1>mkbox - файловый сервер</h1>
+            <div class="tabs">
+                <button type="button" class="tab-btn active" data-tab="upload">upload</button>
+                <button type="button" class="tab-btn" data-tab="paste">paste</button>
+            </div>
             
-            <div id="status-section" class="status-section">
+            <div id="status-section" class="status-section" data-tab-panel="upload">
                 <p id="status-text">загрузка статистики...</p>
             </div>
             
-            <div class="upload-area" id="upload-area">
+            <div class="upload-area" id="upload-area" data-tab-panel="upload">
                 <p>перетащите файлы сюда или нажмите для выбора</p>
                 <form id="upload-form" enctype="multipart/form-data">
                     <input type="file" id="file-input" name="file" required style="display: none;">
@@ -53,12 +57,44 @@
 
             <hr>
 
-            <h2>Мои файлы <span class="status-indicator online"></span></h2>
-            <div class="file-actions">
+            <h2 data-tab-panel="upload">Мои файлы <span class="status-indicator online"></span></h2>
+            <div class="file-actions" data-tab-panel="upload">
                 <button id="create-token-btn" class="secondary" type="button">создать персональный токен</button>
                 <button id="logout-btn" class="danger" type="button">выйти</button>
             </div>
-            <div id="files-list"></div>
+            <div id="files-list" data-tab-panel="upload"></div>
+
+            <div id="paste-panel" data-tab-panel="paste" style="display:none;">
+                <div class="status-section">
+                    <p>вставьте текст, выберите опции и отправьте</p>
+                </div>
+                <form id="paste-form">
+                    <textarea id="paste-content" placeholder="вставьте текст" rows="12" style="width:100%"></textarea>
+                    <div class="file-actions">
+                        <select id="paste-syntax">
+                            <option value="">auto</option>
+                            <option value="txt">txt</option>
+                            <option value="bash">bash</option>
+                            <option value="js">js</option>
+                            <option value="ts">ts</option>
+                            <option value="json">json</option>
+                            <option value="go">go</option>
+                            <option value="py">py</option>
+                            <option value="html">html</option>
+                            <option value="css">css</option>
+                        </select>
+                        <select id="paste-ttl">
+                            <option value="0">no ttl</option>
+                            <option value="3600">1h</option>
+                            <option value="86400">1d</option>
+                            <option value="604800">7d</option>
+                        </select>
+                        <label><input type="checkbox" id="paste-once"> once</label>
+                        <button type="submit">создать пасту</button>
+                    </div>
+                </form>
+                <div id="paste-result" class="status-section" style="display:none"></div>
+            </div>
         </div>
 
         <div id="error-message" class="error-message" style="display: none;"></div>

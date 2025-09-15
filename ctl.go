@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -112,6 +113,24 @@ func (ctl *Ctl) Run() {
 		ctl.unlockAll()
 	case "stats":
 		ctl.showStats()
+	case "paste-create":
+		ctl.pasteCreate()
+	case "paste-list":
+		ctl.pasteList()
+	case "paste-info":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: mkboxctl paste-info <id>")
+			return
+		}
+		ctl.pasteInfo(os.Args[3])
+	case "paste-delete":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: mkboxctl paste-delete <id>")
+			return
+		}
+		ctl.pasteDelete(os.Args[3])
+	case "paste-clean-expired":
+		ctl.pasteCleanExpired()
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		ctl.showHelp()
@@ -136,6 +155,11 @@ func (ctl *Ctl) showHelp() {
 	fmt.Println("  set-max-size <size>     - установить максимальный размер файла")
 	fmt.Println("  set-max-storage <size>  - установить максимальный размер хранилища")
 	fmt.Println("  stats                   - показать полную статистику и информацию о горутинах")
+	fmt.Println("  paste-create            - создать пасту из stdin")
+	fmt.Println("  paste-list              - список паст")
+	fmt.Println("  paste-info <id>         - информация о пасте")
+	fmt.Println("  paste-delete <id>       - удалить пасту")
+	fmt.Println("  paste-clean-expired     - удалить истёкшие пасты")
 }
 
 func (ctl *Ctl) init() {
@@ -797,4 +821,151 @@ func (ctl *Ctl) showStats() {
 	n := runtime.Stack(buf, true)
 	fmt.Println("  Стек горутин:")
 	fmt.Println(string(buf[:n]))
+}
+
+func (ctl *Ctl) openDB() (*sql.DB, error) {
+	dbPath := filepath.Join(ctl.DataDir, "db.sqlite")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("База данных не найдена. Запустите 'mkboxctl init'")
+	}
+	return sql.Open("sqlite3", dbPath)
+}
+
+func (ctl *Ctl) pasteCreate() {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+
+	stat, _ := os.Stdin.Stat()
+	if (stat.Mode() & os.ModeCharDevice) != 0 {
+		fmt.Println("Читай из stdin: echo 'hi' | mkboxctl paste-create")
+		return
+	}
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Printf("Ошибка чтения stdin: %v\n", err)
+		return
+	}
+	if len(data) == 0 {
+		fmt.Println("Пустой ввод")
+		return
+	}
+
+	id := generateRandomString(8)
+	_, err = db.Exec("INSERT INTO pastes (id, content, syntax, once, views, created_at, expires_at) VALUES (?, ?, ?, ?, 0, ?, NULL)", id, string(data), "", 0, time.Now())
+	if err != nil {
+		fmt.Printf("Ошибка сохранения пасты: %v\n", err)
+		return
+	}
+	fmt.Printf("Создано: /p/%s (raw: /p/%s/raw)\n", id, id)
+}
+
+func (ctl *Ctl) pasteList() {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT id, length(content), syntax, once, views, created_at, expires_at FROM pastes ORDER BY created_at DESC LIMIT 100")
+	if err != nil {
+		fmt.Printf("Ошибка получения списка паст: %v\n", err)
+		return
+	}
+	defer rows.Close()
+	fmt.Printf("%-10s %-8s %-6s %-6s %-6s %-20s %-10s\n", "ID", "bytes", "syntax", "once", "views", "created", "expires")
+	for rows.Next() {
+		var id, syntax string
+		var bytes, views int
+		var once bool
+		var created time.Time
+		var expires sql.NullTime
+		rows.Scan(&id, &bytes, &syntax, &once, &views, &created, &expires)
+		exp := "-"
+		if expires.Valid {
+			exp = expires.Time.Format("2006-01-02 15:04:05")
+		}
+		fmt.Printf("%-10s %-8d %-6s %-6t %-6d %-20s %-10s\n", id, bytes, syntax, once, views, created.Format("2006-01-02 15:04:05"), exp)
+	}
+}
+
+func (ctl *Ctl) pasteInfo(id string) {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+	var content, syntax string
+	var once bool
+	var views int
+	var created time.Time
+	var expires sql.NullTime
+	err = db.QueryRow("SELECT content, syntax, once, views, created_at, expires_at FROM pastes WHERE id = ?", id).Scan(&content, &syntax, &once, &views, &created, &expires)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			fmt.Println("Паста не найдена")
+		} else {
+			fmt.Printf("Ошибка: %v\n", err)
+		}
+		return
+	}
+	fmt.Printf("ID: %s\nРазмер: %d байт\nСинтаксис: %s\nOnce: %t\nПросмотры: %d\nСоздана: %s\nИстекает: %v\nПредпросмотр:\n%s\n", id, len(content), syntax, once, views, created.Format("2006-01-02 15:04:05"), func() string {
+		if expires.Valid {
+			return expires.Time.Format("2006-01-02 15:04:05")
+		}
+		return "-"
+	}(), preview(content))
+}
+
+func (ctl *Ctl) pasteDelete(id string) {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+	res, err := db.Exec("DELETE FROM pastes WHERE id = ?", id)
+	if err != nil {
+		fmt.Printf("Ошибка удаления: %v\n", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		fmt.Println("Паста не найдена")
+	} else {
+		fmt.Println("Удалено")
+	}
+}
+
+func (ctl *Ctl) pasteCleanExpired() {
+	db, err := ctl.openDB()
+	if err != nil {
+		fmt.Println(err.Error())
+		return
+	}
+	defer db.Close()
+	res, err := db.Exec("DELETE FROM pastes WHERE expires_at IS NOT NULL AND expires_at < ?", time.Now())
+	if err != nil {
+		fmt.Printf("Ошибка очистки: %v\n", err)
+		return
+	}
+	n, _ := res.RowsAffected()
+	fmt.Printf("Удалено истёкших паст: %d\n", n)
+}
+
+func preview(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	if len(lines) > 5 {
+		lines = lines[:5]
+	}
+	p := strings.Join(lines, "\n")
+	if len(p) > 256 {
+		p = p[:256] + "..."
+	}
+	return p
 }
