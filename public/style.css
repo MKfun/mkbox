@@ -119,6 +119,22 @@ input[type="password"]::placeholder {
     display: block;
     width: 100%;
   }
+  
+  button {
+    min-height: 44px;
+    min-width: 44px;
+    font-size: 16px;
+  }
+}
+
+/* Специальные стили для iOS */
+@supports (-webkit-touch-callout: none) {
+  button {
+    -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+  }
 }
 
 input[type="file"] {
@@ -142,6 +158,16 @@ input[type="file"]::file-selector-button {
     calc(-1 * var(--button-shadow-size)) 0 0 0 var(--button-shadow-dark) inset,
     0 0 0 var(--button-highlight-size) black;
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+  border-radius: 0;
 }
 
 input[type="file"]::file-selector-button {

@@ -49,12 +49,12 @@ export class UIManager {
   }
 
   updateStats(fileCount: number, totalSize: string) {
-    this.statusText.textContent = `Сейчас залито ${fileCount} файлов. Диск засрали на ${totalSize}.`;
+    this.statusText.textContent = `сейчас залито ${fileCount} файлов. диск засрали на ${totalSize}.`;
   }
 
   displayFiles(files: Array<{ id: string; filename: string; size: number; created_at: string; jwt_token?: string; token?: string }>) {
     if (files.length === 0) {
-      this.filesList.innerHTML = '<p>Файлы не найдены</p>';
+      this.filesList.innerHTML = '<p>файлы не найдены</p>';
       return;
     }
 
@@ -64,9 +64,9 @@ export class UIManager {
         <span>${this.formatSize(file.size)}</span>
         <span>${new Date(file.created_at).toLocaleString()}</span>
         <div class="file-actions">
-          <button onclick="window.fileManager.downloadFile('${file.id}', '${file.jwt_token || file.token}')">Скачать</button>
-          <button onclick="window.fileManager.copyToken('${file.jwt_token || file.token}')">Копировать токен</button>
-          <button onclick="window.fileManager.deleteFile('${file.id}')">Удалить</button>
+          <button onclick="window.fileManager.downloadFile('${file.id}', '${file.jwt_token || file.token}')">скачать</button>
+          <button onclick="window.fileManager.copyToken('${file.jwt_token || file.token}')">скопировать токен</button>
+          <button onclick="window.fileManager.deleteFile('${file.id}')">удалить</button>
         </div>
       </div>
     `).join('');

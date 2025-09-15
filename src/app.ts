@@ -41,17 +41,44 @@ export class App {
   private setupEventListeners() {
     const loginButton = document.getElementById('login-btn') as HTMLButtonElement;
     if (loginButton) {
-      loginButton.onclick = () => this.login();
+      loginButton.onclick = null;
+      
+      loginButton.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Login button clicked');
+        this.login();
+      });
+      
+      loginButton.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        console.log('Login button touched');
+        this.login();
+      });
+      
+      loginButton.addEventListener('touchstart', (e) => {
+        e.preventDefault();
+        console.log('Login button touch start');
+      });
     }
 
     const logoutButton = document.getElementById('logout-btn') as HTMLButtonElement;
     if (logoutButton) {
-      logoutButton.onclick = () => this.logout();
+      logoutButton.addEventListener('click', () => this.logout());
+      logoutButton.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        this.logout();
+      });
     }
 
     const createTokenButton = document.getElementById('create-token-btn') as HTMLButtonElement;
     if (createTokenButton) {
-      createTokenButton.onclick = () => this.createPersonalToken();
+      createTokenButton.addEventListener('click', () => this.createPersonalToken());
+      createTokenButton.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        this.createPersonalToken();
+      });
     }
 
     this.ui.setupUploadArea((file) => this.fileManager.uploadFile(file));
