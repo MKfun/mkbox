@@ -137,6 +137,34 @@ export class UIManager {
   }
 
   setupUploadArea(onFileSelect: (file: File) => void) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.style.display = 'none';
+    document.body.appendChild(input);
+
+    this.uploadArea.setAttribute('role', 'button');
+    this.uploadArea.setAttribute('tabindex', '0');
+
+    this.uploadArea.addEventListener('click', () => {
+      input.value = '';
+      input.click();
+    });
+
+    this.uploadArea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        input.value = '';
+        input.click();
+      }
+    });
+
+    input.addEventListener('change', () => {
+      const files = input.files;
+      if (files && files.length > 0) {
+        onFileSelect(files[0]);
+      }
+    });
+
     this.uploadArea.addEventListener('dragover', (e) => {
       e.preventDefault();
       this.uploadArea.classList.add('dragover');
