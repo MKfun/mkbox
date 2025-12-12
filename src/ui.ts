@@ -52,24 +52,73 @@ export class UIManager {
     this.statusText.textContent = `сейчас залито ${fileCount} файлов. диск засрали на ${totalSize}.`;
   }
 
-  displayFiles(files: Array<{ id: string; filename: string; size: number; created_at: string; jwt_token?: string; token?: string; public?: boolean }>) {
+  displayFiles(files: Array<{ id: string; filename: string; size: number; created_at: string; jwt_token?: string; token?: string; public?: boolean; mime_type?: string }>) {
     if (files.length === 0) {
       this.filesList.innerHTML = '<p>файлы не найдены</p>';
       return;
     }
 
-    this.filesList.innerHTML = files.map(file => `
-      <div class="file-item">
-        <span>${file.filename}</span>
+    this.filesList.innerHTML = files.map((file, index) => {
+      const fileId = file.id.replace(/'/g, "\\'");
+      const token = (file.jwt_token || file.token || '').replace(/'/g, "\\'");
+      const filename = file.filename.replace(/'/g, "\\'");
+      const mimeType = (file.mime_type || '').replace(/'/g, "\\'");
+      return `
+      <div class="file-item" data-file-index="${index}">
+        <span>${this.escapeHtml(file.filename)}</span>
         <span>${this.formatSize(file.size)}</span>
         <span>${new Date(file.created_at).toLocaleString()}</span>
         <div class="file-actions">
-          <button onclick="window.fileManager.downloadFile('${file.id}', '${file.jwt_token || file.token}')">скачать</button>
-          <button onclick="window.fileManager.copyFileLink('${file.id}', '${file.jwt_token || file.token}')">копировать ссылку</button>
-          <button onclick="window.fileManager.deleteFile('${file.id}')">удалить</button>
+          <button class="download-btn" data-file-id="${fileId}" data-file-token="${token}" data-file-name="${filename}" data-file-mime="${mimeType}">скачать</button>
+          <button class="copy-link-btn" data-file-id="${fileId}" data-file-token="${token}">копировать ссылку</button>
+          <button class="delete-btn" data-file-id="${fileId}">удалить</button>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
+
+    this.filesList.querySelectorAll('.download-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const fileId = target.getAttribute('data-file-id') || '';
+        const token = target.getAttribute('data-file-token') || '';
+        const filename = target.getAttribute('data-file-name') || '';
+        const mimeType = target.getAttribute('data-file-mime') || '';
+        const fileManager = (window as any).fileManager;
+        if (fileManager) {
+          fileManager.downloadFile(fileId, token, filename, mimeType);
+        }
+      });
+    });
+
+    this.filesList.querySelectorAll('.copy-link-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const fileId = target.getAttribute('data-file-id') || '';
+        const token = target.getAttribute('data-file-token') || '';
+        const fileManager = (window as any).fileManager;
+        if (fileManager) {
+          fileManager.copyFileLink(fileId, token);
+        }
+      });
+    });
+
+    this.filesList.querySelectorAll('.delete-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        const fileId = target.getAttribute('data-file-id') || '';
+        const fileManager = (window as any).fileManager;
+        if (fileManager) {
+          fileManager.deleteFile(fileId);
+        }
+      });
+    });
+  }
+
+  private escapeHtml(text: string): string {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   showUploadProgress() {

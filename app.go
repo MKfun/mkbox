@@ -199,6 +199,40 @@ func sanitizeFilename(filename string) string {
 	return filename
 }
 
+func getExtensionFromMime(mimeType string) string {
+	mimeToExt := map[string]string{
+		"application/java-archive":                ".jar",
+		"application/x-java-archive":              ".jar",
+		"application/vnd.android.package-archive": ".apk",
+		"application/x-apk":                       ".apk",
+		"image/png":                               ".png",
+		"image/jpeg":                              ".jpg",
+		"image/gif":                               ".gif",
+		"image/webp":                              ".webp",
+		"application/zip":                         ".zip",
+		"application/x-zip-compressed":            ".zip",
+		"application/pdf":                         ".pdf",
+		"text/plain":                              ".txt",
+		"text/html":                               ".html",
+		"application/json":                        ".json",
+	}
+	if ext, ok := mimeToExt[mimeType]; ok {
+		return ext
+	}
+	return ""
+}
+
+func ensureFileExtension(filename, mimeType string) string {
+	if strings.Contains(filename, ".") {
+		return filename
+	}
+	ext := getExtensionFromMime(mimeType)
+	if ext != "" {
+		return filename + ext
+	}
+	return filename
+}
+
 func NewApp() *App {
 	config := &Config{
 		SocketPath:     getEnv("MBOX_SOCKET_PATH", "/var/run/mkbox/mkbox.sock"),
@@ -948,6 +982,10 @@ func (app *App) handleDownload(c echo.Context) error {
 	if err != nil {
 		return c.JSON(400, map[string]string{"error": "Invalid file path"})
 	}
+
+	filename := ensureFileExtension(file.Filename, file.MimeType)
+	c.Response().Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	c.Response().Header().Set("Content-Type", file.MimeType)
 
 	return c.File(filePath)
 }

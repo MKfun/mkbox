@@ -6,6 +6,7 @@ export interface FileInfo {
   jwt_token?: string;
   token?: string;
   public?: boolean;
+  mime_type?: string;
 }
 
 export interface Stats {

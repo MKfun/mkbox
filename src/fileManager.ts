@@ -10,7 +10,35 @@ export class FileManager {
     this.ui = ui;
   }
 
-  async downloadFile(fileId: string, fileToken: string) {
+  async downloadFile(fileId: string, fileToken: string, filename?: string, mimeType?: string) {
+    const getExtensionFromMime = (mime: string): string => {
+      const mimeToExt: Record<string, string> = {
+        'application/java-archive': '.jar',
+        'application/x-java-archive': '.jar',
+        'application/vnd.android.package-archive': '.apk',
+        'application/x-apk': '.apk',
+        'image/png': '.png',
+        'image/jpeg': '.jpg',
+        'image/gif': '.gif',
+        'image/webp': '.webp',
+        'application/zip': '.zip',
+        'application/pdf': '.pdf',
+        'text/plain': '.txt',
+      };
+      return mimeToExt[mime] || '';
+    };
+
+    const ensureExtension = (name: string, mime?: string): string => {
+      if (name.includes('.')) return name;
+      if (mime) {
+        const ext = getExtensionFromMime(mime);
+        if (ext) return name + ext;
+      }
+      return name;
+    };
+
+    const finalFilename = filename ? ensureExtension(filename, mimeType) : '';
+
     if (fileToken && fileToken.length > 50) {
       const link = document.createElement('a');
       link.href = `/files/${fileId}`;
@@ -28,7 +56,7 @@ export class FileManager {
           const blob = await response.blob();
           const url = window.URL.createObjectURL(blob);
           link.href = url;
-          link.download = '';
+          link.download = finalFilename;
           link.click();
           window.URL.revokeObjectURL(url);
         } else {
@@ -52,7 +80,7 @@ export class FileManager {
           const blob = await response.blob();
           const url = window.URL.createObjectURL(blob);
           link.href = url;
-          link.download = '';
+          link.download = finalFilename;
           link.click();
           window.URL.revokeObjectURL(url);
         } else {
