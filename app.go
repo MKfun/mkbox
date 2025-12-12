@@ -1182,7 +1182,7 @@ func (app *App) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func (app *App) handleInfo(c echo.Context) error {
 	return c.JSON(200, map[string]string{
-		"version": "pub1.0",
+		"version": "pub1.1",
 	})
 }
 
